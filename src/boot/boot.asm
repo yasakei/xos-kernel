@@ -80,40 +80,29 @@ start:
     cmp byte [sectors_to_read], 0
     je .done_loading
 
-    ; Send 'R' to serial
-    mov dx, 0x3FD
-.wait_r:
-    in al, dx
-    test al, 0x20
-    jz .wait_r
-    mov dx, 0x3F8
-    mov al, 'R'
-    out dx, al
-    
-    ; Convert LBA to CHS
+    ; === LBA to CHS Hardware Converter ===
+    ; Sector   = (LBA % 18) + 1
+    ; Head     = (LBA / 18) % 2
+    ; Cylinder = LBA / 36
     mov ax, [lba_sector]
     xor dx, dx
-    mov cx, 18
-    div cx              ; AX = LBA / 18, DX = LBA % 18
+    mov bx, 18
+    div bx              ; AX = LBA / 18, DX = LBA % 18
     mov cl, dl
-    inc cl              ; CL = (LBA % 18) + 1 = sector
-    
-    mov dx, ax         ; DX = LBA / 18
-    xor ax, ax
-    mov al, dl         ; AL = LBA / 18
-    mov dl, 2
-    div dl             ; AL = (LBA/18) / 2 = cylinder, AH = (LBA/18) % 2 = head
-    
-    mov ch, al         ; CH = cylinder
-    mov dh, ah         ; DH = head
-    mov dl, 0x00       ; DL = drive (floppy 0)
-    
-    ; Set up registers for read
+    inc cl              ; CL = sector
+
+    xor dx, dx
+    mov bx, 2
+    div bx              ; AX = cylinder, DX = head
+    mov ch, al
+    mov dh, dl
+    mov dl, 0           ; floppy drive 0
+
     mov bx, [load_segment]
     mov es, bx
-    xor bx, bx         ; ES:BX = buffer address
-    mov ax, 0x0201     ; AH = 0x02 (read), AL = 1 (sector count)
-    
+    xor bx, bx
+    mov ah, 0x02
+    mov al, 1
     int 0x13
     jnc .read_ok
     
@@ -129,16 +118,6 @@ start:
     jmp disk_error
     
 .read_ok:
-    ; Send 'G' to serial
-    mov dx, 0x3FD
-.wait_g:
-    in al, dx
-    test al, 0x20
-    jz .wait_g
-    mov dx, 0x3F8
-    mov al, 'G'
-    out dx, al
-
     ; Increment counters
     inc word [lba_sector]
     dec byte [sectors_to_read]

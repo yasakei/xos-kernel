@@ -3,6 +3,7 @@
 # QEMU runner script for XOS
 
 OS_IMAGE="build/os.img"
+HDD_IMAGE="build/os_hdd.img"
 LOG_FILE="debug.log"
 
 if [ ! -f "$OS_IMAGE" ]; then
@@ -16,10 +17,13 @@ echo "========================================="
 echo ""
 
 rm -f "$LOG_FILE"
+cp "$OS_IMAGE" "$HDD_IMAGE"
 
 # Unbuffered output for debugging
 qemu-system-x86_64 \
     -drive file="$OS_IMAGE",format=raw,if=floppy \
+    -drive file="$HDD_IMAGE",format=raw,if=ide,index=0,media=disk \
+    -boot order=a \
     -m 256M \
     -serial file:"$LOG_FILE" \
     -machine pc \
@@ -27,6 +31,8 @@ qemu-system-x86_64 \
     -enable-kvm 2>/dev/null || \
     qemu-system-x86_64 \
     -drive file="$OS_IMAGE",format=raw,if=floppy \
+    -drive file="$HDD_IMAGE",format=raw,if=ide,index=0,media=disk \
+    -boot order=a \
     -m 256M \
     -serial file:"$LOG_FILE" \
     -machine pc
