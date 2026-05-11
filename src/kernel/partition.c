@@ -16,6 +16,27 @@ static void* memcpy(void *dest, const void *src, int n) {
 static partition_t partitions[MAX_PARTITIONS];
 static int partition_count = 0;
 
+static void partition_disk_to_ata(uint8_t disk, uint8_t *channel, uint8_t *drive) {
+    switch (disk) {
+        case 0:
+            *channel = ATA_PRIMARY;
+            *drive = ATA_MASTER;
+            break;
+        case 1:
+            *channel = ATA_PRIMARY;
+            *drive = ATA_SLAVE;
+            break;
+        case 2:
+            *channel = ATA_SECONDARY;
+            *drive = ATA_MASTER;
+            break;
+        default:
+            *channel = ATA_SECONDARY;
+            *drive = ATA_SLAVE;
+            break;
+    }
+}
+
 const char* partition_type_name(uint8_t type) {
     switch (type) {
         case PART_TYPE_UNUSED:    return "Unused";
@@ -35,7 +56,10 @@ int partition_detect(uint8_t disk) {
     
     // Read MBR (sector 0)
     mbr_t mbr;
-    if (ata_read_sectors(ATA_PRIMARY, ATA_MASTER, 0, 1, &mbr) != 1) {
+    uint8_t channel, drive;
+    partition_disk_to_ata(disk, &channel, &drive);
+
+    if (ata_read_sectors(channel, drive, 0, 1, &mbr) != 1) {
         printf("[PARTITION] Failed to read MBR\n");
         return -1;
     }

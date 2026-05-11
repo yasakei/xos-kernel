@@ -7,6 +7,27 @@
 static fat32_fs_t current_fs;
 static int fs_mounted = 0;
 
+static void fat32_disk_to_ata(uint8_t disk, uint8_t *channel, uint8_t *drive) {
+    switch (disk) {
+        case 0:
+            *channel = ATA_PRIMARY;
+            *drive = ATA_MASTER;
+            break;
+        case 1:
+            *channel = ATA_PRIMARY;
+            *drive = ATA_SLAVE;
+            break;
+        case 2:
+            *channel = ATA_SECONDARY;
+            *drive = ATA_MASTER;
+            break;
+        default:
+            *channel = ATA_SECONDARY;
+            *drive = ATA_SLAVE;
+            break;
+    }
+}
+
 int fat32_mount(uint8_t disk, uint8_t partition) {
     printf("[FAT32] Mounting partition %d on disk %d...\n", partition, disk);
     
@@ -25,14 +46,19 @@ int fat32_mount(uint8_t disk, uint8_t partition) {
     
     // Read boot sector
     fat32_boot_sector_t boot;
-    if (ata_read_sectors(ATA_PRIMARY, ATA_MASTER, part_info.start_lba, 1, &boot) != 1) {
+    uint8_t channel, drive;
+    fat32_disk_to_ata(disk, &channel, &drive);
+
+    if (ata_read_sectors(channel, drive, part_info.start_lba, 1, &boot) != 1) {
         printf("[FAT32] Failed to read boot sector\n");
         return -1;
     }
     
-    // Verify FAT32 signature
-    if (boot.boot_signature != 0xAA55) {
-        printf("[FAT32] Invalid boot signature: 0x%04x\n", boot.boot_signature);
+    // Verify FAT32 signature from the raw sector bytes
+    uint8_t *boot_raw = (uint8_t *)&boot;
+    uint16_t boot_signature = (uint16_t)boot_raw[510] | ((uint16_t)boot_raw[511] << 8);
+    if (boot_signature != 0xAA55) {
+        printf("[FAT32] Invalid boot signature: 0x%x\n", boot_signature);
         return -1;
     }
     
@@ -57,7 +83,7 @@ int fat32_mount(uint8_t disk, uint8_t partition) {
     fs_mounted = 1;
     
     printf("[FAT32] Mount successful!\n");
-    printf("[FAT32] Boot sector signature: 0x%04x\n", boot.boot_signature);
+    printf("[FAT32] Boot sector signature: 0x%x\n", boot_signature);
     printf("[FAT32] File system type: %.8s\n", boot.file_system_type);
     printf("[FAT32] Volume label: %.11s\n", boot.volume_label);
     printf("[FAT32] Bytes per sector: %d\n", boot.bytes_per_sector);

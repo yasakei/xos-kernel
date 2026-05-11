@@ -36,6 +36,8 @@ typedef struct {
     uint32_t volume_id;             // Volume ID
     uint8_t  volume_label[11];      // Volume label
     uint8_t  file_system_type[8];   // File system type
+    uint8_t  reserved2[420];        // Padding to sector signature
+    uint16_t sector_signature;      // 0xAA55 boot sector signature
 } __attribute__((packed)) fat32_boot_sector_t;
 
 // FAT32 directory entry (32 bytes)

@@ -12,8 +12,9 @@ NASMFLAGS = -f bin
 BOOTLOADER = build/bootloader.bin
 KERNEL = build/kernel.bin
 OS_IMAGE = build/os.img
+STORAGE_IMAGE = build/storage.img
 
-all: $(OS_IMAGE)
+all: $(OS_IMAGE) $(STORAGE_IMAGE)
 
 # Create build directory
 build:
@@ -83,10 +84,13 @@ $(KERNEL): build/kernel_elf
 
 # Create OS image
 $(OS_IMAGE): $(BOOTLOADER) $(KERNEL)
-	dd if=/dev/zero of=$(OS_IMAGE) bs=512 count=2880
+	dd if=/dev/zero of=$(OS_IMAGE) bs=512 count=131072
 	dd if=$(BOOTLOADER) of=$(OS_IMAGE) conv=notrunc
 	dd if=$(KERNEL) of=$(OS_IMAGE) seek=1 conv=notrunc
 	@echo "OS image created: $(OS_IMAGE)"
+
+$(STORAGE_IMAGE): | build
+	python3 scripts/create_storage_image.py $(STORAGE_IMAGE)
 
 clean:
 	rm -rf build/

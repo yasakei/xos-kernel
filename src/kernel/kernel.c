@@ -45,11 +45,11 @@ void kernel_main(void) {
     ata_init();
     printf("OK\n");
     
-    printf("Detecting partitions on Disk 0... ");
-    if (partition_detect(0) == 0) {
+    printf("Detecting partitions on Disk 1... ");
+    if (partition_detect(1) >= 0) {
         printf("OK\n");
         printf("Mounting FAT32 filesystem... ");
-        if (fat32_mount(0, 0) == 0) {
+        if (fat32_mount(1, 0) == 0) {
             printf("OK\n");
         } else {
             printf("Failed\n");

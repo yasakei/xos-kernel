@@ -3,7 +3,7 @@
 # QEMU runner script for XOS
 
 OS_IMAGE="build/os.img"
-HDD_IMAGE="build/os_hdd.img"
+STORAGE_IMAGE="build/storage.img"
 LOG_FILE="debug.log"
 
 if [ ! -f "$OS_IMAGE" ]; then
@@ -12,27 +12,32 @@ if [ ! -f "$OS_IMAGE" ]; then
     exit 1
 fi
 
+if [ ! -f "$STORAGE_IMAGE" ]; then
+    echo "Error: storage image not found at $STORAGE_IMAGE"
+    echo "Please run 'make' first to build the storage image"
+    exit 1
+fi
+
 echo "Booting XOS kernel with QEMU..."
 echo "========================================="
 echo ""
 
 rm -f "$LOG_FILE"
-cp "$OS_IMAGE" "$HDD_IMAGE"
 
 # Unbuffered output for debugging
 qemu-system-x86_64 \
-    -drive file="$OS_IMAGE",format=raw,if=floppy \
-    -drive file="$HDD_IMAGE",format=raw,if=ide,index=0,media=disk \
-    -boot order=a \
+    -drive file="$OS_IMAGE",format=raw,if=ide,index=0,media=disk \
+    -drive file="$STORAGE_IMAGE",format=raw,if=ide,index=1,media=disk \
+    -boot order=c \
     -m 256M \
     -serial file:"$LOG_FILE" \
     -machine pc \
     -cpu host \
     -enable-kvm 2>/dev/null || \
     qemu-system-x86_64 \
-    -drive file="$OS_IMAGE",format=raw,if=floppy \
-    -drive file="$HDD_IMAGE",format=raw,if=ide,index=0,media=disk \
-    -boot order=a \
+    -drive file="$OS_IMAGE",format=raw,if=ide,index=0,media=disk \
+    -drive file="$STORAGE_IMAGE",format=raw,if=ide,index=1,media=disk \
+    -boot order=c \
     -m 256M \
     -serial file:"$LOG_FILE" \
     -machine pc

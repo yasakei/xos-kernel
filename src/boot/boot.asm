@@ -7,6 +7,17 @@ jmp start
 lba_sector dw 1       ; Start at LBA sector 1
 sectors_to_read db 50 ; Read 50 sectors (25 KB)
 load_segment dw 0x0800 ; Load at 0x0800:0000 = physical 0x8000
+boot_drive db 0
+
+; Disk Address Packet for INT 13h extensions
+align 4
+dap:
+    db 0x10            ; packet size
+    db 0x00            ; reserved
+    dw 1               ; sectors per transfer
+    dw 0x0000          ; offset
+    dw 0x0800          ; segment
+    dq 0x0000000000000001
 
 ; Serial port I/O
 serial_init:
@@ -48,6 +59,7 @@ start:
     mov es, ax
     mov ss, ax
     mov sp, 0x7C00
+    mov [boot_drive], dl
     
     ; Initialize serial (set up COM1 port)
     mov dx, 0x3FB       ; Line control register  
@@ -80,29 +92,19 @@ start:
     cmp byte [sectors_to_read], 0
     je .done_loading
 
-    ; === LBA to CHS Hardware Converter ===
-    ; Sector   = (LBA % 18) + 1
-    ; Head     = (LBA / 18) % 2
-    ; Cylinder = LBA / 36
+    ; BIOS extended read using the boot drive
+    xor eax, eax
     mov ax, [lba_sector]
-    xor dx, dx
-    mov bx, 18
-    div bx              ; AX = LBA / 18, DX = LBA % 18
-    mov cl, dl
-    inc cl              ; CL = sector
+    mov dword [dap + 8], eax
+    xor eax, eax
+    mov dword [dap + 12], eax
+    mov ax, [load_segment]
+    mov word [dap + 4], 0x0000
+    mov [dap + 6], ax
 
-    xor dx, dx
-    mov bx, 2
-    div bx              ; AX = cylinder, DX = head
-    mov ch, al
-    mov dh, dl
-    mov dl, 0           ; floppy drive 0
-
-    mov bx, [load_segment]
-    mov es, bx
-    xor bx, bx
-    mov ah, 0x02
-    mov al, 1
+    mov si, dap
+    mov dl, [boot_drive]
+    mov ah, 0x42
     int 0x13
     jnc .read_ok
     
