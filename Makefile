@@ -57,6 +57,20 @@ build/pci.o: src/kernel/drivers/bus/pci.c | build
 build/ata.o: src/kernel/drivers/storage/ata.c | build
 	$(CC) $(CFLAGS) -c src/kernel/drivers/storage/ata.c -o build/ata.o
 
+# ── Timer ─────────────────────────────────────────────────────────────────────
+build/pit.o: src/kernel/drivers/timer/pit.c | build
+	$(CC) $(CFLAGS) -c src/kernel/drivers/timer/pit.c -o build/pit.o
+
+# ── Scheduler ────────────────────────────────────────────────────────────────
+build/scheduler.o: src/kernel/sched/scheduler.c | build
+	$(CC) $(CFLAGS) -c src/kernel/sched/scheduler.c -o build/scheduler.o
+
+build/context_switch.o: src/kernel/sched/context_switch.asm | build
+	$(NASM) -f elf64 src/kernel/sched/context_switch.asm -o build/context_switch.o
+
+build/task_bootstrap.o: src/kernel/sched/task_bootstrap.asm | build
+	$(NASM) -f elf64 src/kernel/sched/task_bootstrap.asm -o build/task_bootstrap.o
+
 # ── Filesystem ────────────────────────────────────────────────────────────────
 build/partition.o: src/kernel/fs/partition.c | build
 	$(CC) $(CFLAGS) -c src/kernel/fs/partition.c -o build/partition.o
@@ -88,12 +102,16 @@ OBJS = build/kernel_entry.o \
        build/keyboard.o \
        build/pci.o \
        build/ata.o \
+       build/pit.o \
        build/partition.o \
        build/fat32.o \
        build/pmm.o \
        build/heap.o \
        build/printf.o \
-       build/debuglog.o
+       build/debuglog.o \
+       build/scheduler.o \
+       build/context_switch.o \
+       build/task_bootstrap.o
 
 build/kernel_elf: $(OBJS) src/linker.ld | build
 	$(LD) $(LDFLAGS) -o build/kernel_elf $(OBJS)
