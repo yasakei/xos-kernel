@@ -1,6 +1,6 @@
 #include "heap.h"
 #include "pmm.h"
-#include "printf.h"
+#include "../lib/printf.h"
 #include <stdint.h>
 
 // A native rapid Sequential Bump-Allocator kernel heap

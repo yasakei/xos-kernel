@@ -43,16 +43,17 @@ typedef struct {
 // FAT32 directory entry (32 bytes)
 typedef struct {
     uint8_t  name[11];              // File name (8.3 format)
-    uint8_t  attributes;            // File attributes
-    uint8_t  creation_time_fine;    // Creation time (fine)
-    uint16_t creation_time;         // Creation time
-    uint16_t creation_date;         // Creation date
-    uint16_t last_access_date;      // Last access date
-    uint16_t first_cluster_high;    // First cluster (high word)
-    uint16_t write_time;            // Write time
-    uint16_t write_date;            // Write date
-    uint16_t first_cluster_low;     // First cluster (low word)
-    uint32_t file_size;             // File size
+    uint8_t  attributes;            // File attributes        (+11)
+    uint8_t  nt_reserved;           // Reserved (NTRes)       (+12)
+    uint8_t  creation_time_tenth;   // Creation time (tenths) (+13)
+    uint16_t creation_time;         // Creation time          (+14)
+    uint16_t creation_date;         // Creation date          (+16)
+    uint16_t last_access_date;      // Last access date       (+18)
+    uint16_t first_cluster_high;    // First cluster high     (+20)
+    uint16_t write_time;            // Write time             (+22)
+    uint16_t write_date;            // Write date             (+24)
+    uint16_t first_cluster_low;     // First cluster low      (+26)
+    uint32_t file_size;             // File size              (+28)
 } __attribute__((packed)) fat32_dirent_t;
 
 // File attributes
@@ -100,6 +101,12 @@ typedef struct {
 
 // Mount FAT32 file system
 int fat32_mount(uint8_t disk, uint8_t partition);
+
+// List files in the root directory
+int fat32_list_root(void);
+
+// List files in a directory path
+int fat32_list_directory(const char *path);
 
 // Open file
 fat32_file_t* fat32_open(const char *path);

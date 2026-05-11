@@ -1,6 +1,6 @@
 #include "serial.h"
-#include "idt.h"
-#include "printf.h"
+#include "../../idt.h"
+#include "../../lib/printf.h"
 #include <stdint.h>
 
 #define COM1 0x3F8

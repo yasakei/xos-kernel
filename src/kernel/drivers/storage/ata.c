@@ -1,5 +1,5 @@
 #include "ata.h"
-#include "printf.h"
+#include "../../lib/printf.h"
 
 #define ATA_PRIMARY_IO      0x1F0
 #define ATA_PRIMARY_CTRL    0x3F6
@@ -35,17 +35,39 @@ static uint16_t ata_read_word(uint16_t base, uint8_t offset) {
     return ret;
 }
 
-// Wait for device to become ready
-static int ata_wait_ready(uint16_t base, int timeout_ms) {
-    int i = timeout_ms * 5;  // Reduced iterations for faster timeout
-    while (i--) {
-        uint8_t status = ata_read(base, 7);  // Read status
+// Perform a 400ns delay by reading the alternate status register 4 times
+static void ata_delay400ns(uint16_t ctrl) {
+    ata_read(ctrl, 0);
+    ata_read(ctrl, 0);
+    ata_read(ctrl, 0);
+    ata_read(ctrl, 0);
+}
+
+// Wait until BSY clears (and optionally ERR/DF are not set)
+static int ata_wait_bsy_clear(uint16_t base, int timeout_iters) {
+    while (timeout_iters--) {
+        uint8_t status = ata_read(base, 7);
         if (!(status & ATA_SR_BSY)) {
-            if (status & ATA_SR_ERR) return -1;
+            if (status & (ATA_SR_ERR | ATA_SR_DF)) return -1;
             return 0;
         }
     }
     return -1;  // Timeout
+}
+
+// Wait until BSY clears AND DRQ is set (data ready to transfer)
+static int ata_wait_drq(uint16_t base, int timeout_iters) {
+    while (timeout_iters--) {
+        uint8_t status = ata_read(base, 7);
+        if (status & (ATA_SR_ERR | ATA_SR_DF)) return -1;
+        if (!(status & ATA_SR_BSY) && (status & ATA_SR_DRQ)) return 0;
+    }
+    return -1;  // Timeout
+}
+
+// Wait for device to become ready (BSY clear, no error) — kept for compatibility
+static int ata_wait_ready(uint16_t base, int timeout_ms) {
+    return ata_wait_bsy_clear(base, timeout_ms * 1000);
 }
 
 // Check if device exists (quick check)
@@ -131,6 +153,7 @@ int ata_detect_device(uint8_t channel, uint8_t drive, ata_device_t *device) {
 
 int ata_read_sectors(uint8_t channel, uint8_t drive, uint32_t lba, uint16_t count, void *buffer) {
     uint16_t base = ata_get_io_base(channel);
+    uint16_t ctrl = ata_get_ctrl_base(channel);
     uint8_t *buf = (uint8_t*)buffer;
     
     // Quick check: if device doesn't exist, fail immediately
@@ -138,48 +161,54 @@ int ata_read_sectors(uint8_t channel, uint8_t drive, uint32_t lba, uint16_t coun
         printf("[ATA] No device detected on channel %d\n", channel);
         return -1;
     }
-    
-    // Select drive
+
+    // Wait for controller to be idle before selecting drive
+    if (ata_wait_bsy_clear(base, 100000) != 0) {
+        printf("[ATA] Controller busy before drive select\n");
+        return -1;
+    }
+
+    // Select drive with LBA28 mode (bits 7,6,5 = 1,1,1; bit 4 = drive; bits 3:0 = LBA[27:24])
     ata_write(base, 6, 0xE0 | (drive << 4) | ((lba >> 24) & 0x0F));
-    
-    // Set sector count
+
+    // 400ns delay after drive select (read alt-status 4 times)
+    ata_delay400ns(ctrl);
+
+    // Wait for BSY to clear after drive select
+    if (ata_wait_bsy_clear(base, 100000) != 0) {
+        printf("[ATA] Drive select timeout\n");
+        return -1;
+    }
+
+    // Set sector count and LBA address
     ata_write(base, 2, count & 0xFF);
-    
-    // Set LBA
-    ata_write(base, 3, lba & 0xFF);
-    ata_write(base, 4, (lba >> 8) & 0xFF);
+    ata_write(base, 3,  lba        & 0xFF);
+    ata_write(base, 4, (lba >>  8) & 0xFF);
     ata_write(base, 5, (lba >> 16) & 0xFF);
     
-    // Issue READ command
+    // Issue READ PIO command
     ata_write(base, 7, ATA_CMD_READ_PIO);
-    
-    // Read sectors
+
+    // Read each sector
     for (int sector = 0; sector < count; sector++) {
-        // Wait for data ready
-        if (ata_wait_ready(base, 100) != 0) {
-            printf("[ATA] Read timeout at sector %d\n", sector);
+        // 400ns delay then wait for BSY+DRQ
+        ata_delay400ns(ctrl);
+
+        if (ata_wait_drq(base, 500000) != 0) {
+            printf("[ATA] Read timeout at sector %d (LBA %d)\n", sector, lba + sector);
             return -1;
         }
         
-        // Check status
-        uint8_t status = ata_read(base, 7);
-        if (status & ATA_SR_ERR) {
-            printf("[ATA] Read error at sector %d\n", sector);
-            return -1;
-        }
-        
-        if (!(status & ATA_SR_DRQ)) {
-            printf("[ATA] No data ready at sector %d\n", sector);
-            return -1;
-        }
-        
-        // Read 256 words (512 bytes)
+        // Read 256 words (512 bytes) from data port
         for (int i = 0; i < 256; i++) {
             uint16_t word = ata_read_word(base, 0);
             buf[0] = word & 0xFF;
             buf[1] = (word >> 8) & 0xFF;
             buf += 2;
         }
+
+        // Small delay between sectors
+        ata_delay400ns(ctrl);
     }
     
     return count;

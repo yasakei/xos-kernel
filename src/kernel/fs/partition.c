@@ -1,6 +1,6 @@
 #include "partition.h"
-#include "ata.h"
-#include "printf.h"
+#include "../drivers/storage/ata.h"
+#include "../lib/printf.h"
 
 // Simple memcpy implementation for freestanding environment
 static void* memcpy(void *dest, const void *src, int n) {

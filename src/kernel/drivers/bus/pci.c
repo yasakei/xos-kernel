@@ -1,5 +1,5 @@
 #include "pci.h"
-#include "printf.h"
+#include "../../lib/printf.h"
 
 // Basic 32-bit hardware instruction wrappers for accessing PCI 0xCF8 memory rails
 static inline void outl(uint16_t port, uint32_t val) {

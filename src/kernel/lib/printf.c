@@ -1,7 +1,7 @@
 #include "printf.h"
 #include "debuglog.h"
-#include "vga.h"
-#include "serial.h"
+#include "../drivers/display/vga.h"
+#include "../drivers/serial/serial.h"
 #include <stdarg.h>
 
 static void print_int(long val, int base) {

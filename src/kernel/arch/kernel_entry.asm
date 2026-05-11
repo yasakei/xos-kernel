@@ -67,6 +67,10 @@ long_mode:
     mov gs, ax
     mov ss, ax
 
+    ; Move stack to a safe region well above the kernel binary
+    ; Kernel loads at 0x8000, stack at 0x1F0000 gives ~1.9MB of space
+    mov rsp, 0x1F0000
+
     ; Write 'K' to serial port 0x3F8 to indicate we're in 64-bit mode
     mov al, 'K'
     mov dx, 0x3F8

@@ -1,6 +1,6 @@
 #include "keyboard.h"
-#include "idt.h"
-#include "printf.h"
+#include "../../idt.h"
+#include "../../lib/printf.h"
 #include <stdint.h>
 
 static inline uint8_t inb_kb(uint16_t port) {

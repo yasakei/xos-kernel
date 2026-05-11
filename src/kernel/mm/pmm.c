@@ -1,5 +1,5 @@
 #include "pmm.h"
-#include "printf.h"
+#include "../lib/printf.h"
 
 // Target: 256 MB Total RAM / 4KB Page Size = 65536 Base Pages
 #define TOTAL_PAGES 65536

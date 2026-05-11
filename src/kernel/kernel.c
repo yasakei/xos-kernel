@@ -1,16 +1,16 @@
 #include <stdint.h>
 #include "idt.h"
-#include "vga.h"
-#include "serial.h"
-#include "printf.h"
-#include "keyboard.h"
-#include "pmm.h"
-#include "heap.h"
-#include "pci.h"
-#include "debuglog.h"
-#include "ata.h"
-#include "partition.h"
-#include "fat32.h"
+#include "drivers/display/vga.h"
+#include "drivers/serial/serial.h"
+#include "lib/printf.h"
+#include "drivers/input/keyboard.h"
+#include "mm/pmm.h"
+#include "mm/heap.h"
+#include "drivers/bus/pci.h"
+#include "lib/debuglog.h"
+#include "drivers/storage/ata.h"
+#include "fs/partition.h"
+#include "fs/fat32.h"
 
 void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
@@ -51,6 +51,34 @@ void kernel_main(void) {
         printf("Mounting FAT32 filesystem... ");
         if (fat32_mount(1, 0) == 0) {
             printf("OK\n");
+            printf("Listing FAT32 root directory...\n");
+            fat32_list_root();
+
+            // Read HELLO.TXT
+            printf("\nReading HELLO.TXT...\n");
+            fat32_file_t *f = fat32_open("/HELLO.TXT");
+            if (f) {
+                uint8_t buf[64];
+                int n = fat32_read(f, buf, sizeof(buf) - 1);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    printf("[FAT32] Contents (%d bytes): %s", n, (char*)buf);
+                }
+                fat32_close(f);
+            }
+
+            // Read README.TXT
+            printf("\nReading README.TXT...\n");
+            fat32_file_t *r = fat32_open("/README.TXT");
+            if (r) {
+                uint8_t buf[64];
+                int n = fat32_read(r, buf, sizeof(buf) - 1);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    printf("[FAT32] Contents (%d bytes): %s", n, (char*)buf);
+                }
+                fat32_close(r);
+            }
         } else {
             printf("Failed\n");
         }
