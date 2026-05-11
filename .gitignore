@@ -1,0 +1,17 @@
+BOOT_GUIDE.md
+README.md
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+node_modules/
+dist/
+build/
+coverage/
+.env
+.idea/
+.vscode/
+*.iml
+STEP*
+TODO.md
