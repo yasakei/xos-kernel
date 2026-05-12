@@ -1,7 +1,10 @@
 #include "pit.h"
 #include "../../idt.h"
 #include "../../lib/printf.h"
+#include "../../lib/debuglog.h"
+#include "../../drivers/display/vga.h"
 #include "../../sched/scheduler.h"
+#include "../../drivers/serial/serial.h"
 
 // PIT I/O ports
 #define PIT_CHANNEL0    0x40    // Channel 0 data port (IRQ0)
@@ -21,8 +24,7 @@ static void outb_pit(uint16_t port, uint8_t val) {
 static void pit_irq_handler(struct registers *regs) {
     (void)regs;
     pit_ticks++;
-
-    // Notify scheduler every tick
+    serial_flush();       // drain serial TX buffer
     scheduler_tick();
 }
 
@@ -44,7 +46,12 @@ void pit_init(uint32_t frequency_hz) {
     // Register IRQ0 handler (IDT entry 32)
     register_interrupt_handler(32, pit_irq_handler);
 
-    printf("[PIT] Timer initialized at %d Hz (divisor=%d)\n", frequency_hz, divisor);
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[PIT] Timer initialized at %d Hz (divisor=%d)\n", frequency_hz, divisor);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
 }
 
 uint64_t pit_get_ticks(void) {

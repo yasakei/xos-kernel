@@ -1,5 +1,7 @@
 #include "ata.h"
 #include "../../lib/printf.h"
+#include "../../lib/debuglog.h"
+#include "../../drivers/display/vga.h"
 
 #define ATA_PRIMARY_IO      0x1F0
 #define ATA_PRIMARY_CTRL    0x3F6
@@ -33,6 +35,11 @@ static uint16_t ata_read_word(uint16_t base, uint8_t offset) {
     uint16_t ret;
     __asm__ volatile("inw %1, %0" : "=a"(ret) : "Nd"((uint16_t)(base + offset)));
     return ret;
+}
+
+// Write 16-bit value to ATA port
+static void ata_write_word(uint16_t base, uint8_t offset, uint16_t value) {
+    __asm__ volatile("outw %0, %1" : : "a"(value), "Nd"((uint16_t)(base + offset)));
 }
 
 // Perform a 400ns delay by reading the alternate status register 4 times
@@ -86,15 +93,24 @@ static int ata_device_exists(uint16_t base) {
 }
 
 void ata_init(void) {
-    printf("\n[ATA] Initializing IDE/ATA subsystem...\n");
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("\n[ATA] Initializing IDE/ATA subsystem...\n");
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
 }
 
 int ata_detect_device(uint8_t channel, uint8_t drive, ata_device_t *device) {
     uint16_t base = ata_get_io_base(channel);
-    
-    printf("[ATA] Detecting %s drive %d...\n", 
-           channel == ATA_PRIMARY ? "Primary" : "Secondary",
-           drive == ATA_MASTER ? 0 : 1);
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[ATA] Detecting %s drive %d...\n", 
+               channel == ATA_PRIMARY ? "Primary" : "Secondary",
+               drive == ATA_MASTER ? 0 : 1);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
     
     // Select drive (bit 4 = slave, bit 0-3 = 0)
     ata_write(base, 6, 0xA0 | (drive << 4));
@@ -145,8 +161,13 @@ int ata_detect_device(uint8_t channel, uint8_t drive, ata_device_t *device) {
     }
     device->serial[20] = '\0';
     
-    printf("[ATA] Device found: %s\n", device->model);
-    printf("[ATA] Size: %d sectors (%d MB)\n", device->size, (device->size * 512) / 1024 / 1024);
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[ATA] Device found: %s\n", device->model);
+        printf("[ATA] Size: %d sectors (%d MB)\n", device->size, (device->size * 512) / 1024 / 1024);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
     
     return 0;
 }
@@ -215,17 +236,61 @@ int ata_read_sectors(uint8_t channel, uint8_t drive, uint32_t lba, uint16_t coun
 }
 
 int ata_write_sectors(uint8_t channel, uint8_t drive, uint32_t lba, uint16_t count, const void *buffer) {
-    // TODO: Implement write support
-    printf("[ATA] Write not yet implemented\n");
-    return -1;
+    uint16_t base = ata_get_io_base(channel);
+    uint16_t ctrl = ata_get_ctrl_base(channel);
+    const uint8_t *buf = (const uint8_t*)buffer;
+
+    if (!ata_device_exists(base)) {
+        printf("[ATA] No device detected on channel %d\n", channel);
+        return -1;
+    }
+
+    if (ata_wait_bsy_clear(base, 100000) != 0) {
+        printf("[ATA] Controller busy before drive select\n");
+        return -1;
+    }
+
+    ata_write(base, 6, 0xE0 | (drive << 4) | ((lba >> 24) & 0x0F));
+    ata_delay400ns(ctrl);
+
+    if (ata_wait_bsy_clear(base, 100000) != 0) {
+        printf("[ATA] Drive select timeout\n");
+        return -1;
+    }
+
+    ata_write(base, 2, count & 0xFF);
+    ata_write(base, 3,  lba        & 0xFF);
+    ata_write(base, 4, (lba >>  8) & 0xFF);
+    ata_write(base, 5, (lba >> 16) & 0xFF);
+    ata_write(base, 7, ATA_CMD_WRITE_PIO);
+
+    for (int sector = 0; sector < count; sector++) {
+        if (ata_wait_drq(base, 500000) != 0) {
+            printf("[ATA] Write timeout at sector %d (LBA %d)\n", sector, lba + sector);
+            return -1;
+        }
+
+        for (int i = 0; i < 256; i++) {
+            uint16_t word = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+            ata_write_word(base, 0, word);
+            buf += 2;
+        }
+
+        ata_write(base, 7, 0xE7);  // CACHE FLUSH
+        if (ata_wait_bsy_clear(base, 500000) != 0) {
+            printf("[ATA] Flush timeout after sector %d (LBA %d)\n", sector, lba + sector);
+            return -1;
+        }
+    }
+
+    return count;
 }
 
 int ata_get_device_count(void) {
-    // TODO: Return actual device count
     return 0;
 }
 
 ata_device_t* ata_get_device(int index) {
-    // TODO: Return device from list
+    (void)index;
     return NULL;
 }

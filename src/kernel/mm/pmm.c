@@ -1,5 +1,7 @@
 #include "pmm.h"
 #include "../lib/printf.h"
+#include "../lib/debuglog.h"
+#include "../drivers/display/vga.h"
 
 // Target: 256 MB Total RAM / 4KB Page Size = 65536 Base Pages
 #define TOTAL_PAGES 65536
@@ -33,7 +35,12 @@ void pmm_init(void) {
         bitmap_clear(i);
     }
     
-    printf("[PMM] Physical Memory Allocator ONLINE! Available Pool: ~254 MB\n");
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[PMM] Physical Memory Allocator ONLINE! Available Pool: ~254 MB\n");
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
 }
 
 void* pmm_alloc_page(void) {
@@ -57,4 +64,16 @@ void pmm_free_page(void* ptr) {
     if (page_idx >= 512 && page_idx < TOTAL_PAGES) {
         bitmap_clear(page_idx);
     }
+}
+
+void pmm_get_stats(pmm_stats_t *stats) {
+    size_t used = 0;
+    for (size_t i = 512; i < TOTAL_PAGES; i++) {
+        if (bitmap_test(i)) used++;
+    }
+    stats->total_pages     = TOTAL_PAGES;
+    stats->reserved_pages  = 512;                    // 0–2MB reserved
+    stats->used_pages      = used;
+    stats->free_pages      = (TOTAL_PAGES - 512) - used;
+    stats->page_size       = PAGE_SIZE;
 }

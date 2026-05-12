@@ -34,6 +34,19 @@ build/kernel_entry.o: src/kernel/arch/kernel_entry.asm | build
 build/interrupt_stubs.o: src/kernel/arch/interrupt_stubs.asm | build
 	$(NASM) -f elf64 src/kernel/arch/interrupt_stubs.asm -o build/interrupt_stubs.o
 
+# ── Arch ──────────────────────────────────────────────────────────────────────
+build/gdt.o: src/kernel/arch/gdt.c | build
+	$(CC) $(CFLAGS) -c src/kernel/arch/gdt.c -o build/gdt.o
+
+build/usermode.o: src/kernel/arch/usermode.asm | build
+	$(NASM) -f elf64 src/kernel/arch/usermode.asm -o build/usermode.o
+
+build/user_test.o: src/kernel/arch/user_test.asm | build
+	$(NASM) -f elf64 src/kernel/arch/user_test.asm -o build/user_test.o
+
+build/syscall.o: src/kernel/arch/syscall.c | build
+	$(CC) $(CFLAGS) -c src/kernel/arch/syscall.c -o build/syscall.o
+
 # ── Kernel core ───────────────────────────────────────────────────────────────
 build/kernel.o: src/kernel/kernel.c | build
 	$(CC) $(CFLAGS) -c src/kernel/kernel.c -o build/kernel.o
@@ -60,6 +73,10 @@ build/ata.o: src/kernel/drivers/storage/ata.c | build
 # ── Timer ─────────────────────────────────────────────────────────────────────
 build/pit.o: src/kernel/drivers/timer/pit.c | build
 	$(CC) $(CFLAGS) -c src/kernel/drivers/timer/pit.c -o build/pit.o
+
+# ── Shell ─────────────────────────────────────────────────────────────────────
+build/shell.o: src/kernel/shell/shell.c | build
+	$(CC) $(CFLAGS) -c src/kernel/shell/shell.c -o build/shell.o
 
 # ── Scheduler ────────────────────────────────────────────────────────────────
 build/scheduler.o: src/kernel/sched/scheduler.c | build
@@ -97,6 +114,10 @@ OBJS = build/kernel_entry.o \
        build/interrupt_stubs.o \
        build/kernel.o \
        build/idt.o \
+       build/gdt.o \
+       build/usermode.o \
+       build/user_test.o \
+       build/syscall.o \
        build/vga.o \
        build/serial.o \
        build/keyboard.o \
@@ -111,7 +132,8 @@ OBJS = build/kernel_entry.o \
        build/debuglog.o \
        build/scheduler.o \
        build/context_switch.o \
-       build/task_bootstrap.o
+       build/task_bootstrap.o \
+       build/shell.o
 
 build/kernel_elf: $(OBJS) src/linker.ld | build
 	$(LD) $(LDFLAGS) -o build/kernel_elf $(OBJS)

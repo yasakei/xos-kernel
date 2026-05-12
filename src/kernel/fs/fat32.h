@@ -94,6 +94,8 @@ typedef struct {
     uint32_t fat_start;             // FAT start sector
     uint32_t data_start;            // Data start sector
     uint32_t root_dir_cluster;      // Root directory cluster
+    uint32_t sectors_per_fat;       // Sectors per FAT
+    uint8_t  num_fats;              // Number of FAT copies
     uint16_t bytes_per_sector;      // Bytes per sector
     uint8_t  sectors_per_cluster;   // Sectors per cluster
     uint32_t total_clusters;        // Total clusters
@@ -113,6 +115,15 @@ fat32_file_t* fat32_open(const char *path);
 
 // Read from file
 int fat32_read(fat32_file_t *file, void *buffer, size_t count);
+
+// Write file contents in the root directory (creates or overwrites)
+int fat32_write(const char *path, const void *buffer, size_t count);
+
+// Create an empty file in the root directory
+int fat32_create(const char *path);
+
+// Delete a file from the root directory
+int fat32_delete(const char *path);
 
 // Close file
 void fat32_close(fat32_file_t *file);

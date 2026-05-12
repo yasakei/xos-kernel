@@ -1,6 +1,8 @@
 #include "partition.h"
 #include "../drivers/storage/ata.h"
 #include "../lib/printf.h"
+#include "../lib/debuglog.h"
+#include "../drivers/display/vga.h"
 
 // Simple memcpy implementation for freestanding environment
 static void* memcpy(void *dest, const void *src, int n) {
@@ -52,7 +54,12 @@ const char* partition_type_name(uint8_t type) {
 }
 
 int partition_detect(uint8_t disk) {
-    printf("[PARTITION] Detecting partitions on disk %d...\n", disk);
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[PARTITION] Detecting partitions on disk %d...\n", disk);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
     
     // Read MBR (sector 0)
     mbr_t mbr;
@@ -87,11 +94,16 @@ int partition_detect(uint8_t disk) {
         pinfo->start_lba = part->start_lba;
         pinfo->size_sectors = part->size_sectors;
         
-        printf("[PARTITION] Found partition %d:\n", i);
-        printf("  Type: %s (0x%02x)\n", partition_type_name(part->type), part->type);
-        printf("  Bootable: %s\n", pinfo->bootable ? "Yes" : "No");
-        printf("  Start LBA: %d\n", pinfo->start_lba);
-        printf("  Size: %d sectors (%d MB)\n", pinfo->size_sectors, (pinfo->size_sectors * 512) / 1024 / 1024);
+        if (debug_print_is_enabled()) {
+            uint8_t prev = vga_get_color();
+            vga_set_color(14, 0);
+            printf("[PARTITION] Found partition %d:\n", i);
+            printf("  Type: %s (0x%02x)\n", partition_type_name(part->type), part->type);
+            printf("  Bootable: %s\n", pinfo->bootable ? "Yes" : "No");
+            printf("  Start LBA: %d\n", pinfo->start_lba);
+            printf("  Size: %d sectors (%d MB)\n", pinfo->size_sectors, (pinfo->size_sectors * 512) / 1024 / 1024);
+            vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+        }
         
         partition_count++;
         
@@ -101,7 +113,12 @@ int partition_detect(uint8_t disk) {
         }
     }
     
-    printf("[PARTITION] Detection complete: %d partitions found\n", partition_count);
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[PARTITION] Detection complete: %d partitions found\n", partition_count);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
     return partition_count;
 }
 

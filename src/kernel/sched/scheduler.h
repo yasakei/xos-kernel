@@ -37,16 +37,22 @@ typedef struct {
     task_state_t    state;
     uint32_t        id;
     uint64_t        stack_top;      // Highest address of this task's stack
+    uint64_t        user_stack_bottom;
+    uint64_t        user_stack_top;
+    uint64_t        user_entry;
+    uint8_t         is_user;
     uint64_t        tick_count;
     char            name[32];
 } task_t;
 
 void scheduler_init(void);
 int  scheduler_create_task(const char *name, void (*entry)(void));
+int  scheduler_create_user_task(const char *name, void (*entry)(void));
 void scheduler_tick(void);
 void scheduler_dump(void);
 void scheduler_start(void);
 void scheduler_yield(void);
 int  scheduler_current_id(void);
+task_t *scheduler_current_task(void);
 
 #endif

@@ -16,14 +16,14 @@ kernel_entry:
     rep stosd
 
     ; 2. Setup PML4 at 0x1000
-    mov dword [0x1000], 0x2003
+    mov dword [0x1000], 0x2007
 
     ; 3. Setup PDPT at 0x2000
-    mov dword [0x2000], 0x3003
+    mov dword [0x2000], 0x3007
 
     ; 4. Setup PD at 0x3000 to map first 256MB dynamically using 2MB huge pages!
     mov edi, 0x3000
-    mov eax, 0x00000083      ; Base physical address 0 + Present + R/W + Huge
+    mov eax, 0x00000087      ; Base physical address 0 + Present + R/W + User + Huge
     mov ecx, 128             ; 128 pages * 2MB = 256MB total mapped memory natively!
 .build_vmm:
     mov [edi], eax

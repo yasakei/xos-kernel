@@ -1,4 +1,6 @@
 #include "idt.h"
+#include "lib/printf.h"
+#include <stdint.h>
 
 // The 32 exception ISRs defined in assembly
 extern void isr0(void);
@@ -75,9 +77,20 @@ struct idt_ptr idtr;
 static void set_idt_gate(int n, void* handler) {
     uint64_t addr = (uint64_t)handler;
     idt[n].offset_low = addr & 0xFFFF;
-    idt[n].selector = 0x08; // 64-bit code segment from our GDT
+    idt[n].selector = 0x08;
     idt[n].ist = 0;
-    idt[n].flags = 0x8E;    // Present, Ring 0, Interrupt Gate
+    idt[n].flags = 0x8E;    // Present, Ring-0, Interrupt Gate
+    idt[n].offset_mid = (addr >> 16) & 0xFFFF;
+    idt[n].offset_high = (addr >> 32) & 0xFFFFFFFF;
+    idt[n].zero = 0;
+}
+
+static void set_idt_gate_user(int n, void* handler) {
+    uint64_t addr = (uint64_t)handler;
+    idt[n].offset_low = addr & 0xFFFF;
+    idt[n].selector = 0x08;
+    idt[n].ist = 0;
+    idt[n].flags = 0xEE;    // Present, Ring-3 callable, Interrupt Gate
     idt[n].offset_mid = (addr >> 16) & 0xFFFF;
     idt[n].offset_high = (addr >> 32) & 0xFFFFFFFF;
     idt[n].zero = 0;
@@ -89,12 +102,50 @@ void register_interrupt_handler(uint8_t n, isr_t handler) {
     interrupt_handlers[n] = handler;
 }
 
+// Page fault handler — prints debug info and halts
+static void page_fault_handler(struct registers* regs) {
+    extern void serial_flush(void);
+    
+    uint64_t cr2;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    
+    printf("[PAGE FAULT]\n");
+    printf("  Address: %p\n", (void*)cr2);
+    printf("  Error code: %p\n", (void*)regs->err_code);
+    printf("  Present: %d, Write: %d, User: %d, Reserved: %d, InstructionFetch: %d\n",
+        regs->err_code & 1,
+        (regs->err_code >> 1) & 1,
+        (regs->err_code >> 2) & 1,
+        (regs->err_code >> 3) & 1,
+        (regs->err_code >> 4) & 1);
+    printf("  RIP: %p, CS: %p\n", (void*)regs->rip, (void*)regs->cs);
+    printf("  RSP: %p, SS: %p\n", (void*)regs->rsp, (void*)regs->ss);
+    printf("[HALT]\n");
+    serial_flush();
+    
+    while(1) {
+        __asm__ volatile("hlt");
+    }
+}
+
 static inline void outb_pic(uint16_t port, uint8_t val) {
     __asm__ volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
 }
 
 static inline void io_wait(void) {
     outb_pic(0x80, 0);
+}
+
+// GP fault handler
+static void gp_fault_handler(struct registers* regs) {
+    extern void serial_flush(void);
+    printf("[GP FAULT] Exception 13\n");
+    printf("  Error code: %p\n", (void*)regs->err_code);
+    printf("  RIP: %p, CS: %p\n", (void*)regs->rip, (void*)regs->cs);
+    printf("  RSP: %p, SS: %p\n", (void*)regs->rsp, (void*)regs->ss);
+    printf("[HALT]\n");
+    serial_flush();
+    while(1) { __asm__ volatile("hlt"); }
 }
 
 void idt_init(void) {
@@ -173,6 +224,15 @@ void idt_init(void) {
     outb_pic(0x21, 0xEC); io_wait(); // Unmask IRQ0, IRQ1, IRQ4
     outb_pic(0xA1, 0xFF); io_wait(); 
 
+    extern void isr128(void);
+
+    // int 0x80 syscall gate — DPL=3 so Ring-3 code can call it
+    set_idt_gate_user(0x80, isr128);
+
+    // Register page fault handler
+    register_interrupt_handler(14, page_fault_handler);
+    register_interrupt_handler(13, gp_fault_handler);
+
     load_idt(&idtr);
     
     // Enable interrupts
@@ -183,6 +243,8 @@ extern void outb(uint16_t port, uint8_t val);
 
 // C side of the exception fault handler
 void interrupt_handler(struct registers* regs) {
+    extern void serial_flush(void);
+    
     if (interrupt_handlers[regs->int_no] != 0) {
         isr_t handler = interrupt_handlers[regs->int_no];
         handler(regs);
@@ -201,6 +263,7 @@ void interrupt_handler(struct registers* regs) {
                 outb(0x3F8, '0' + (regs->int_no % 10));
             }
             outb(0x3F8, '\n');
+            serial_flush();
 
             // Infinitely halt
             while(1) {

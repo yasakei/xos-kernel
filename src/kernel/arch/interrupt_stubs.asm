@@ -7,7 +7,6 @@ load_idt:
     lidt [rdi]
     ret
 
-; Macro for exceptions that don't push an error code
 %macro ISR_NOERRCODE 1
 global isr%1
 isr%1:
@@ -16,7 +15,6 @@ isr%1:
     jmp isr_common_stub
 %endmacro
 
-; Macro for exceptions that implicitly push an error code
 %macro ISR_ERRCODE 1
 global isr%1
 isr%1:
@@ -32,16 +30,16 @@ ISR_NOERRCODE 4
 ISR_NOERRCODE 5
 ISR_NOERRCODE 6
 ISR_NOERRCODE 7
-ISR_ERRCODE 8    ; Error code
+ISR_ERRCODE   8
 ISR_NOERRCODE 9
-ISR_ERRCODE 10   ; Error code
-ISR_ERRCODE 11   ; Error code
-ISR_ERRCODE 12   ; Error code
-ISR_ERRCODE 13   ; Error code
-ISR_ERRCODE 14   ; Error code
+ISR_ERRCODE   10
+ISR_ERRCODE   11
+ISR_ERRCODE   12
+ISR_ERRCODE   13
+ISR_ERRCODE   14
 ISR_NOERRCODE 15
 ISR_NOERRCODE 16
-ISR_ERRCODE 17   ; Error code
+ISR_ERRCODE   17
 ISR_NOERRCODE 18
 ISR_NOERRCODE 19
 ISR_NOERRCODE 20
@@ -54,28 +52,27 @@ ISR_NOERRCODE 26
 ISR_NOERRCODE 27
 ISR_NOERRCODE 28
 ISR_NOERRCODE 29
-ISR_ERRCODE 30   ; Error code
+ISR_ERRCODE   30
 ISR_NOERRCODE 31
 
-; IRQs
 %macro IRQ 2
 global irq%1
 irq%1:
-    push 0      ; Dummy error code
-    push %2     ; Interrupt number (32 + IRQ)
+    push 0
+    push %2
     jmp isr_common_stub
 %endmacro
 
-IRQ 0, 32
-IRQ 1, 33
-IRQ 2, 34
-IRQ 3, 35
-IRQ 4, 36
-IRQ 5, 37
-IRQ 6, 38
-IRQ 7, 39
-IRQ 8, 40
-IRQ 9, 41
+IRQ 0,  32
+IRQ 1,  33
+IRQ 2,  34
+IRQ 3,  35
+IRQ 4,  36
+IRQ 5,  37
+IRQ 6,  38
+IRQ 7,  39
+IRQ 8,  40
+IRQ 9,  41
 IRQ 10, 42
 IRQ 11, 43
 IRQ 12, 44
@@ -83,8 +80,15 @@ IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
 
+; int 0x80 — syscall gate (callable from Ring-3)
+global isr128
+isr128:
+    push 0      ; dummy error code
+    push 128    ; int number
+    jmp isr_common_stub
+
 isr_common_stub:
-    ; Push all general-purpose registers
+    ; Save all caller/callee registers
     push rax
     push rbx
     push rcx
@@ -101,22 +105,21 @@ isr_common_stub:
     push r14
     push r15
 
-    ; Call the C handler with a pointer to the registers struct
-    mov rdi, rsp        ; Pass original unaligned stack pointer as 'regs' to C
-    mov rdx, rsp        ; Temporarily save original stack pointer
+    ; rdi = pointer to register frame (first arg to interrupt_handler)
+    mov rdi, rsp
 
-    ; System V ABI requires 16-byte alignment before 'call'
-    and rsp, ~0xF
+    ; Align stack to 16 bytes for System V ABI.
+    ; Save rsp in rbx (already saved above) — use a red-zone-safe scratch.
+    ; We saved rbx, so we can use it freely here.
+    mov rbx, rsp
+    and rsp, 0xFFFFFFFFFFFFFFF0
+    sub rsp, 8              ; keep 16-byte alignment after call pushes ret addr
 
-    push rdx            ; We need to save the original stack pointer perfectly aligned. But wait, push ruins alignment.
-    ; Instead, just do:
-    mov rbp, rdx
-    
     call interrupt_handler
-    
-    mov rsp, rbp        ; Restore original exact stack layout before pop
 
-    ; Restore all general-purpose registers
+    ; Restore rsp to point back at saved registers
+    mov rsp, rbx
+
     pop r15
     pop r14
     pop r13
@@ -133,8 +136,5 @@ isr_common_stub:
     pop rbx
     pop rax
 
-    ; Drop the error code and interrupt number
-    add rsp, 16
-    
-    ; Return from interrupt handler
+    add rsp, 16     ; discard int_no and err_code
     iretq
