@@ -20,10 +20,16 @@
 
 #define SHELL_BUF_SIZE  256
 #define MAX_ARGS        16
+#define HISTORY_SIZE    16
 
 // Default prompt colors (foreground, background)
 static uint8_t shell_prompt_fg = 2; // green
 static uint8_t shell_prompt_bg = 0; // black
+
+// Command history
+static char history[HISTORY_SIZE][SHELL_BUF_SIZE];
+static int history_count = 0;
+static int history_pos = 0;
 
 // VGA color names for convenience
 static const char *vga_color_names[16] = {
@@ -483,23 +489,122 @@ static void cmd_reboot(void) {
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 
+static void clear_line(int pos) {
+    for (int i = 0; i < pos; i++) {
+        printf("\b \b");
+    }
+}
+
+static void print_line(const char *line) {
+    for (int i = 0; line[i]; i++) {
+        printf("%c", line[i]);
+    }
+}
+
 static int sh_readline(char *buf, int max) {
     int pos = 0;
+    int browse_pos = history_count;
+    char temp[SHELL_BUF_SIZE] = {0};
+    
     while (1) {
         char c = keyboard_getchar();
+        
+        // Handle escape sequences (arrow keys)
+        if (c == 27) {  // ESC
+            char next = keyboard_getchar();
+            if (next == '[') {
+                char arrow = keyboard_getchar();
+                
+                if (arrow == 'A') {  // Up arrow
+                    if (browse_pos > 0) {
+                        // Save current input if at bottom
+                        if (browse_pos == history_count) {
+                            for (int i = 0; i < pos; i++) temp[i] = buf[i];
+                            temp[pos] = '\0';
+                        }
+                        
+                        browse_pos--;
+                        clear_line(pos);
+                        pos = 0;
+                        for (int i = 0; history[browse_pos][i]; i++) {
+                            buf[pos++] = history[browse_pos][i];
+                        }
+                        buf[pos] = '\0';
+                        print_line(buf);
+                        vga_flush();
+                    }
+                    continue;
+                }
+                else if (arrow == 'B') {  // Down arrow
+                    if (browse_pos < history_count) {
+                        browse_pos++;
+                        clear_line(pos);
+                        pos = 0;
+                        
+                        if (browse_pos == history_count) {
+                            // Restore saved input
+                            for (int i = 0; temp[i]; i++) {
+                                buf[pos++] = temp[i];
+                            }
+                        } else {
+                            for (int i = 0; history[browse_pos][i]; i++) {
+                                buf[pos++] = history[browse_pos][i];
+                            }
+                        }
+                        buf[pos] = '\0';
+                        print_line(buf);
+                        vga_flush();
+                    }
+                    continue;
+                }
+            }
+            continue;
+        }
+        
         if (c == '\n' || c == '\r') {
             printf("\n");
             vga_flush();
             buf[pos] = '\0';
+            
+            // Add to history if non-empty and different from last
+            if (pos > 0) {
+                int add_to_history = 1;
+                if (history_count > 0) {
+                    // Check if same as last command
+                    int same = 1;
+                    for (int i = 0; i < pos; i++) {
+                        if (buf[i] != history[history_count - 1][i]) {
+                            same = 0;
+                            break;
+                        }
+                    }
+                    if (same && history[history_count - 1][pos] == '\0') {
+                        add_to_history = 0;
+                    }
+                }
+                
+                if (add_to_history) {
+                    int idx = history_count % HISTORY_SIZE;
+                    for (int i = 0; i < pos; i++) {
+                        history[idx][i] = buf[i];
+                    }
+                    history[idx][pos] = '\0';
+                    if (history_count < HISTORY_SIZE) history_count++;
+                }
+            }
+            
             return pos;
         }
+        
         if ((c == '\b' || c == 127) && pos > 0) {
             pos--;
             printf("\b \b");
             vga_flush();
             continue;
         }
+        
         if (c < 32 || c > 126) continue;
+        
         if (pos < max - 1) {
             buf[pos++] = c;
             printf("%c", c);
