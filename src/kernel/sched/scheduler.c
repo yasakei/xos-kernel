@@ -2,6 +2,7 @@
 #include "../arch/gdt.h"
 #include "../arch/usermode.h"
 #include "../lib/printf.h"
+#include "../lib/debuglog.h"
 #include "../mm/pmm.h"
 #include <stdint.h>
 
@@ -21,7 +22,9 @@ static void user_task_bootstrap(void) {
         while (1) { __asm__ volatile("hlt"); }
     }
 
-    printf("[SCHED] Bootstrapping user task %s (task=%d)\n", t->name, (int)t->id);
+    if (debug_print_is_enabled()) {
+        printf("[SCHED] Bootstrapping user task %s (task=%d)\n", t->name, (int)t->id);
+    }
     tss_set_kernel_stack(t->stack_top);
     usermode_enter(t->user_entry, t->user_stack_top);
 
@@ -43,7 +46,9 @@ static int find_next_ready_task(void) {
 }
 
 void scheduler_init(void) {
-    printf("[SCHED] Initializing scheduler...\n");
+    if (debug_print_is_enabled()) {
+        printf("[SCHED] Initializing scheduler...\n");
+    }
     for (int i = 0; i < MAX_TASKS; i++) {
         tasks[i].state = TASK_UNUSED;
         tasks[i].id = 0;
@@ -56,7 +61,9 @@ void scheduler_init(void) {
     }
     current_task_id = -1;
     next_task_id = 0;
-    printf("[SCHED] Scheduler ready (max %d tasks)\n", MAX_TASKS);
+    if (debug_print_is_enabled()) {
+        printf("[SCHED] Scheduler ready (max %d tasks)\n", MAX_TASKS);
+    }
 }
 
 int scheduler_create_task(const char *name, void (*entry)(void)) {
@@ -75,7 +82,7 @@ int scheduler_create_task(const char *name, void (*entry)(void)) {
 
     task_t *t = &tasks[slot];
     t->id = next_task_id++;
-    t->state = TASK_READY;
+    t->state = TASK_UNUSED;
     t->tick_count = 0;
 
     // Copy name
@@ -119,8 +126,13 @@ int scheduler_create_task(const char *name, void (*entry)(void)) {
     t->ctx.r14 = 0;
     t->ctx.r15 = 0;
 
-    printf("[SCHED] Created task %d: %s (slot=%d, entry=%p, stack=%p)\n", 
-           t->id, t->name, slot, (void*)entry, (void*)t->stack_top);
+    // Mark the task runnable only after the full control block is initialized.
+    t->state = TASK_READY;
+
+    if (debug_print_is_enabled()) {
+        printf("[SCHED] Created task %d: %s (slot=%d, entry=%p, stack=%p)\n", 
+               t->id, t->name, slot, (void*)entry, (void*)t->stack_top);
+    }
 
     return t->id;
 }
@@ -141,7 +153,7 @@ int scheduler_create_user_task(const char *name, void (*entry)(void)) {
 
     task_t *t = &tasks[slot];
     t->id = next_task_id++;
-    t->state = TASK_READY;
+    t->state = TASK_UNUSED;
     t->tick_count = 0;
     t->is_user = 1;
     t->user_entry = (uint64_t)entry;
@@ -187,8 +199,13 @@ int scheduler_create_user_task(const char *name, void (*entry)(void)) {
     t->ctx.r14 = 0;
     t->ctx.r15 = 0;
 
-    printf("[SCHED] Created user task %d: %s (slot=%d, entry=%p, kstack=%p, ustack=%p)\n",
-           t->id, t->name, slot, (void*)entry, (void*)t->stack_top, (void*)t->user_stack_top);
+    // Mark the task runnable only after the full control block is initialized.
+    t->state = TASK_READY;
+
+    if (debug_print_is_enabled()) {
+        printf("[SCHED] Created user task %d: %s (slot=%d, entry=%p, kstack=%p, ustack=%p)\n",
+               t->id, t->name, slot, (void*)entry, (void*)t->stack_top, (void*)t->user_stack_top);
+    }
 
     return t->id;
 }
@@ -247,13 +264,19 @@ void scheduler_start(void) {
     current_task_id = next;
     tasks[next].state = TASK_RUNNING;
     tss_set_kernel_stack(tasks[next].stack_top);
-    printf("[SCHED] Starting first task: %s (slot=%d)\n", tasks[next].name, next);
+    if (debug_print_is_enabled()) {
+        printf("[SCHED] Starting first task: %s (slot=%d)\n", tasks[next].name, next);
+    }
+    __asm__ volatile("sti");  // Enable interrupts before starting first task
     scheduler_start_first_task(&tasks[next].ctx);
 }
 
 void scheduler_yield(void) {
-    // Manually trigger a task switch
+    // Manually trigger a task switch.
+    // Disable interrupts so the switch cannot race with PIT/keyboard IRQs.
+    __asm__ volatile("cli");
     scheduler_tick();
+    __asm__ volatile("sti");
 }
 
 void scheduler_dump(void) {

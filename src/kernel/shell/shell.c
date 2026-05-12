@@ -14,6 +14,7 @@
 #include "../arch/usermode.h"
 #include "../arch/syscall.h"
 #include "../arch/gdt.h"
+#include "../arch/elf.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -104,6 +105,7 @@ static void cmd_help(void) {
     printf("  echo <text> [>] <file>  Print text or write file\n");
     printf("  rm <file>         Delete file from root\n");
     printf("  log on|off|status Toggle verbose logging\n");
+    printf("  exec <file>       Load ELF64 and run in Ring-3\n");
     printf("  usermode          Launch Ring-3 test task\n");
     printf("  reboot            Reboot\n");
     printf("  ------------------------------------\n");
@@ -406,14 +408,68 @@ static void cmd_echo(int argc, char **argv) {
 static void cmd_usermode(void) {
     extern void user_test_entry(void);  // defined in user_test.asm
 
-    printf("[USERMODE] cmd_usermode() called\n");
+    if (debug_print_is_enabled()) {
+        printf("[USERMODE] cmd_usermode() called\n");
+    }
     int user_task = scheduler_create_user_task("user-test", user_test_entry);
     if (user_task < 0) {
         printf("[USERMODE] Failed to create user task\n");
         return;
     }
 
-    printf("[USERMODE] Created user task %d, yielding to scheduler\n", user_task);
+    if (debug_print_is_enabled()) {
+        printf("[USERMODE] Created user task %d, yielding to scheduler\n", user_task);
+    }
+    scheduler_yield();
+}
+
+static void cmd_exec(const char *filename) {
+    if (!filename || sh_strlen(filename) == 0) {
+        printf("Usage: exec <file>\n");
+        return;
+    }
+
+    __asm__ volatile("cli");
+
+    if (debug_print_is_enabled()) {
+        printf("[EXEC] Loading user program: %s\n", filename);
+    }
+
+    char path[64];
+    if (filename[0] == '/') {
+        sh_strcpy(path, filename);
+    } else {
+        path[0] = '/';
+        sh_strcpy(path + 1, filename);
+    }
+
+    uint64_t entry = 0;
+    if (debug_print_is_enabled()) {
+        printf("[EXEC] Attempting to load ELF from %s\n", path);
+    }
+    if (elf_load_user_program(path, &entry) != 0) {
+        printf("[EXEC] Error: failed to load %s\n", filename);
+        __asm__ volatile("sti");
+        return;
+    }
+    if (debug_print_is_enabled()) {
+        printf("[EXEC] ELF loaded successfully, entry point: %p\n", (void *)(uintptr_t)entry);
+    }
+
+    if (debug_print_is_enabled()) {
+        printf("[EXEC] Creating user task...\n");
+    }
+    int task_id = scheduler_create_user_task(filename, (void (*)(void))(uintptr_t)entry);
+    if (task_id < 0) {
+        printf("[EXEC] Error: failed to create user task\n");
+        __asm__ volatile("sti");
+        return;
+    }
+
+    if (debug_print_is_enabled()) {
+        printf("[EXEC] Task %d started (%s @ %p), yielding to scheduler\n", task_id, filename, (void *)(uintptr_t)entry);
+    }
+    __asm__ volatile("sti");
     scheduler_yield();
 }
 
@@ -484,6 +540,7 @@ static void sh_parse_and_run(char *line) {
     else if (sh_strcmp(cmd, "echo")    == 0) cmd_echo(argc, argv);
     else if (sh_strcmp(cmd, "rm")      == 0) cmd_rm(argc > 1 ? argv[1] : "");
     else if (sh_strcmp(cmd, "log")     == 0) cmd_log(argc, argv);
+    else if (sh_strcmp(cmd, "exec")    == 0) cmd_exec(argc > 1 ? argv[1] : "");
     else if (sh_strcmp(cmd, "usermode")== 0) cmd_usermode();
     else if (sh_strcmp(cmd, "reboot")  == 0) cmd_reboot();
     else if (sh_strcmp(cmd, "colors")  == 0) cmd_colors();

@@ -28,6 +28,13 @@ def write_u32(buf, offset, value):
     struct.pack_into('<I', buf, offset, value)
 
 
+def clusters_needed(size_bytes):
+    cluster_bytes = SECTORS_PER_CLUSTER * SECTOR_SIZE
+    if size_bytes == 0:
+        return 1
+    return (size_bytes + cluster_bytes - 1) // cluster_bytes
+
+
 def make_mbr(image):
     mbr = bytearray(SECTOR_SIZE)
     # Partition entry at offset 446
@@ -79,7 +86,7 @@ def make_fat32_boot_sector(image):
     image[PARTITION_START * SECTOR_SIZE:(PARTITION_START + 1) * SECTOR_SIZE] = bs
 
 
-def make_fat_tables(image):
+def make_fat_tables(image, files):
     fat = bytearray(SECTORS_PER_FAT * SECTOR_SIZE)
 
     def set_fat_entry(cluster, value):
@@ -90,8 +97,16 @@ def make_fat_tables(image):
     set_fat_entry(0, 0x0FFFFFF8)
     set_fat_entry(1, 0x0FFFFFFF)
     set_fat_entry(ROOT_CLUSTER, 0x0FFFFFFF)
-    set_fat_entry(3, 0x0FFFFFFF)
-    set_fat_entry(4, 0x0FFFFFFF)
+
+    for f in files:
+        first = f['first_cluster']
+        count = f['cluster_count']
+        for i in range(count):
+            c = first + i
+            if i == count - 1:
+                set_fat_entry(c, 0x0FFFFFFF)
+            else:
+                set_fat_entry(c, c + 1)
 
     fat1_start = FAT_START * SECTOR_SIZE
     fat2_start = (FAT_START + SECTORS_PER_FAT) * SECTOR_SIZE
@@ -99,7 +114,7 @@ def make_fat_tables(image):
     image[fat2_start:fat2_start + len(fat)] = fat
 
 
-def make_root_directory(image):
+def make_root_directory(image, files):
     root = bytearray(SECTORS_PER_CLUSTER * SECTOR_SIZE)
 
     def put_name(entry, name, ext):
@@ -115,37 +130,75 @@ def make_root_directory(image):
         struct.pack_into('<I', entry, 28, size)
         root[offset:offset + 32] = entry
 
-    write_entry(0, 'HELLO', 'TXT', 0x20, 3, 14)
-    write_entry(32, 'README', 'TXT', 0x20, 4, 20)
-    root[64] = 0x00  # end marker
+    for i, f in enumerate(files):
+        write_entry(i * 32, f['name'], f['ext'], 0x20, f['first_cluster'], len(f['data']))
+    root[len(files) * 32] = 0x00  # end marker
 
     root_start = lba_of_cluster(ROOT_CLUSTER) * SECTOR_SIZE
     image[root_start:root_start + len(root)] = root
 
 
-def make_file_data(image):
+def make_file_data(image, files):
     def write_cluster(cluster, data):
         start = lba_of_cluster(cluster) * SECTOR_SIZE
         buf = bytearray(SECTORS_PER_CLUSTER * SECTOR_SIZE)
         buf[:len(data)] = data
         image[start:start + len(buf)] = buf
 
-    write_cluster(3, b'Hello from XOS!\n')
-    write_cluster(4, b'FAT32 listing demo\n')
+    cluster_bytes = SECTORS_PER_CLUSTER * SECTOR_SIZE
+    for f in files:
+        data = f['data']
+        for i in range(f['cluster_count']):
+            chunk = data[i * cluster_bytes:(i + 1) * cluster_bytes]
+            write_cluster(f['first_cluster'] + i, chunk)
+
+
+def build_file_table(user_elf_path=None):
+    files = [
+        {
+            'name': 'HELLO',
+            'ext': 'TXT',
+            'data': b'Hello from XOS!\n',
+        },
+        {
+            'name': 'README',
+            'ext': 'TXT',
+            'data': b'FAT32 listing demo\n',
+        },
+    ]
+
+    if user_elf_path and os.path.exists(user_elf_path):
+        with open(user_elf_path, 'rb') as ef:
+            elf_data = ef.read()
+        files.append({
+            'name': 'HELLO',
+            'ext': 'ELF',
+            'data': elf_data,
+        })
+
+    next_cluster = 3
+    for f in files:
+        f['cluster_count'] = clusters_needed(len(f['data']))
+        f['first_cluster'] = next_cluster
+        next_cluster += f['cluster_count']
+
+    return files
 
 
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else 'build/storage.img'
+    user_elf_path = sys.argv[2] if len(sys.argv) > 2 else None
     os.makedirs(os.path.dirname(out), exist_ok=True)
     image = bytearray(IMAGE_SIZE)
+    files = build_file_table(user_elf_path)
     make_mbr(image)
     make_fat32_boot_sector(image)
-    make_fat_tables(image)
-    make_root_directory(image)
-    make_file_data(image)
+    make_fat_tables(image, files)
+    make_root_directory(image, files)
+    make_file_data(image, files)
     with open(out, 'wb') as f:
         f.write(image)
-    print(f'Created {out} ({IMAGE_SIZE // (1024 * 1024)} MiB)')
+    print(f'Created {out} ({IMAGE_SIZE // (1024 * 1024)} MiB) with {len(files)} file(s)')
 
 
 if __name__ == '__main__':

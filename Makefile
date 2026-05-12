@@ -13,6 +13,7 @@ BOOTLOADER = build/bootloader.bin
 KERNEL     = build/kernel.bin
 OS_IMAGE   = build/os.img
 STORAGE_IMAGE = build/storage.img
+USER_ELF = build/HELLO.ELF
 
 all: $(OS_IMAGE) $(STORAGE_IMAGE)
 
@@ -46,6 +47,9 @@ build/user_test.o: src/kernel/arch/user_test.asm | build
 
 build/syscall.o: src/kernel/arch/syscall.c | build
 	$(CC) $(CFLAGS) -c src/kernel/arch/syscall.c -o build/syscall.o
+
+build/elf.o: src/kernel/arch/elf.c | build
+	$(CC) $(CFLAGS) -c src/kernel/arch/elf.c -o build/elf.o
 
 # ── Kernel core ───────────────────────────────────────────────────────────────
 build/kernel.o: src/kernel/kernel.c | build
@@ -109,6 +113,13 @@ build/printf.o: src/kernel/lib/printf.c | build
 build/debuglog.o: src/kernel/lib/debuglog.c | build
 	$(CC) $(CFLAGS) -c src/kernel/lib/debuglog.c -o build/debuglog.o
 
+# ── User programs (ELF64) ────────────────────────────────────────────────────
+build/hello_user.o: src/user/hello_user.asm | build
+	$(NASM) -f elf64 src/user/hello_user.asm -o build/hello_user.o
+
+$(USER_ELF): build/hello_user.o | build
+	$(LD) -m elf_x86_64 -nostdlib -e _start -Ttext 0x210000 -o $(USER_ELF) build/hello_user.o
+
 # ── Link ──────────────────────────────────────────────────────────────────────
 OBJS = build/kernel_entry.o \
        build/interrupt_stubs.o \
@@ -118,6 +129,7 @@ OBJS = build/kernel_entry.o \
        build/usermode.o \
        build/user_test.o \
        build/syscall.o \
+	build/elf.o \
        build/vga.o \
        build/serial.o \
        build/keyboard.o \
@@ -148,8 +160,8 @@ $(OS_IMAGE): $(BOOTLOADER) $(KERNEL)
 	dd if=$(KERNEL) of=$(OS_IMAGE) seek=1 conv=notrunc
 	@echo "OS image created: $(OS_IMAGE)"
 
-$(STORAGE_IMAGE): | build
-	python3 scripts/create_storage_image.py $(STORAGE_IMAGE)
+$(STORAGE_IMAGE): $(USER_ELF) | build
+	python3 scripts/create_storage_image.py $(STORAGE_IMAGE) $(USER_ELF)
 
 clean:
 	rm -rf build/
