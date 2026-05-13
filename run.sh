@@ -31,11 +31,10 @@ QEMU_COMMON=(
 )
 
 if [ "$1" = "serial" ]; then
-    echo "Booting XOS (serial mode) — direct COM1 on stdio, Ctrl+C to quit"
+    echo "Booting XOS (serial mode, stable/TCG) — direct COM1 on stdio, Ctrl+C to quit"
     echo ""
-    qemu-system-x86_64 "${QEMU_COMMON[@]}" \
-        -nographic -monitor none -serial stdio \
-        -cpu host -enable-kvm 2>/dev/null || \
+    # Serial/headless mode is used for low-level bring-up and tracing.
+    # Keep it deterministic by avoiding host acceleration here.
     qemu-system-x86_64 "${QEMU_COMMON[@]}" \
         -nographic -monitor none -serial stdio
 else

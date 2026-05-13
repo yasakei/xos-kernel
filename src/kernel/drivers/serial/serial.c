@@ -15,6 +15,16 @@ static volatile uint32_t tx_tail = 0;   // write index
 static inline int tx_empty(void) { return tx_head == tx_tail; }
 static inline int tx_full(void)  { return ((tx_tail + 1) % SERIAL_TX_BUF) == tx_head; }
 
+static inline uint64_t irq_save_disable(void) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags) {
+    __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory", "cc");
+}
+
 static void tx_push(char c) {
     if (!tx_full()) {
         tx_buf[tx_tail] = c;
@@ -52,24 +62,30 @@ void serial_init(void) {
 
 // Queue one char — zero port I/O, returns instantly
 void serial_putchar(char c) {
+    uint64_t flags = irq_save_disable();
     tx_push(c);
     // Opportunistically drain so early boot messages are visible even
     // before PIT is initialized.
     serial_drain();
+    irq_restore(flags);
 }
 
 // Queue a string — zero port I/O, returns instantly
 void serial_write(const char *str) {
+    uint64_t flags = irq_save_disable();
     for (int i = 0; str[i]; i++)
         tx_push(str[i]);
     // Opportunistically drain so early boot messages are visible even
     // before PIT is initialized.
     serial_drain();
+    irq_restore(flags);
 }
 
 // Call this periodically (e.g. from PIT handler) to keep draining
 void serial_flush(void) {
+    uint64_t flags = irq_save_disable();
     serial_drain();
+    irq_restore(flags);
 }
 
 // Blocking read from serial RX (for shell input)
