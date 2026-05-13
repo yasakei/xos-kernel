@@ -45,6 +45,12 @@ static uint32_t fat_cache_sector = 0xFFFFFFFF;  // invalid sentinel
 static fat32_file_t open_file;
 static uint8_t file_cluster_buf[4096];  // max cluster size (8 * 512)
 
+// Forward declarations
+static int fat32_load_directory_cluster(uint32_t cluster, uint8_t *buffer, size_t buffer_size);
+static int fat32_find_in_directory(uint32_t dir_cluster, const char *name, fat32_dirent_t *out);
+static int fat32_load_root_directory(void);
+static int fat32_navigate_path(const char *path, uint32_t *parent_cluster, fat32_dirent_t *entry, char *filename);
+
 static void fat32_disk_to_ata(uint8_t disk, uint8_t *channel, uint8_t *drive) {
     switch (disk) {
         case 0:
@@ -367,6 +373,11 @@ int fat32_mount(uint8_t disk, uint8_t partition) {
     uint32_t data_sectors = boot.total_sectors_32 - (boot.reserved_sectors + fat_area_size);
     current_fs.total_clusters = data_sectors / boot.sectors_per_cluster;
     
+    // Initialize current directory to root
+    current_fs.current_dir_cluster = current_fs.root_dir_cluster;
+    current_fs.current_path[0] = '/';
+    current_fs.current_path[1] = '\0';
+    
     fs_mounted = 1;
 
     char fs_type[9];
@@ -399,42 +410,60 @@ int fat32_list_directory(const char *path) {
         return -1;
     }
 
-    if (!path || path[0] == '\0' || (path[0] == '/' && path[1] == '\0')) {
-        if (fat32_load_root_directory() != 0) {
-            return -1;
+    // Determine which directory to list
+    uint32_t dir_cluster;
+    if (!path || path[0] == '\0') {
+        // No path given - use current directory
+        dir_cluster = current_fs.current_dir_cluster;
+        // Safety check
+        if (dir_cluster == 0) {
+            dir_cluster = current_fs.root_dir_cluster;
         }
-
-        if (debug_print_is_enabled()) {
-            uint8_t prev = vga_get_color();
-            vga_set_color(14, 0);
-            printf("[FAT32] Listing %s\n", path ? path : "/");
-            vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
-        }
-        for (uint32_t i = 0; i < (uint32_t)(current_fs.sectors_per_cluster * 512 / sizeof(fat32_dirent_t)); i++) {
-            fat32_dirent_t *entry = (fat32_dirent_t *)(root_dir_buffer + (i * sizeof(fat32_dirent_t)));
-
-            if (entry->name[0] == 0x00) {
-                break;
-            }
-            if (entry->name[0] == 0xE5 || entry->attributes == ATTR_LFN) {
-                continue;
-            }
-
-            char name[32];
-            fat32_format_name(entry, name, sizeof(name));
-
-            if (entry->attributes & ATTR_DIRECTORY) {
-                printf("[DIR ] %s\n", name);
-            } else {
-                printf("[FILE] %s (%d bytes)\n", name, entry->file_size);
-            }
-        }
-
-        return 0;
+    } else if (path[0] == '/' && path[1] == '\0') {
+        // Root directory
+        dir_cluster = current_fs.root_dir_cluster;
+    } else {
+        // TODO: Support listing arbitrary paths
+        printf("[FAT32] Directory listing only supported for current dir and root\n");
+        return -1;
     }
 
-    printf("[FAT32] Directory listing only supported for root for now: %s\n", path);
-    return -1;
+    // Load the directory
+    uint8_t dir_buffer[16384];
+    if (fat32_load_directory_cluster(dir_cluster, dir_buffer, sizeof(dir_buffer)) != 0) {
+        return -1;
+    }
+
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] Listing directory (cluster=%d)\n", dir_cluster);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+
+    // List entries
+    uint32_t max_entries = (current_fs.sectors_per_cluster * 512) / sizeof(fat32_dirent_t);
+    for (uint32_t i = 0; i < max_entries; i++) {
+        fat32_dirent_t *entry = (fat32_dirent_t *)(dir_buffer + (i * sizeof(fat32_dirent_t)));
+
+        if (entry->name[0] == 0x00) {
+            break;
+        }
+        if (entry->name[0] == 0xE5 || entry->attributes == ATTR_LFN) {
+            continue;
+        }
+
+        char name[32];
+        fat32_format_name(entry, name, sizeof(name));
+
+        if (entry->attributes & ATTR_DIRECTORY) {
+            printf("[DIR ] %s\n", name);
+        } else {
+            printf("[FILE] %s (%d bytes)\n", name, entry->file_size);
+        }
+    }
+
+    return 0;
 }
 
 int fat32_list_root(void) {
@@ -483,40 +512,77 @@ fat32_file_t* fat32_open(const char *path) {
         return NULL;
     }
 
-    // Strip leading slash
+    // Determine which directory to use
+    uint32_t dir_cluster;
     const char *name = path;
-    if (name[0] == '/') name++;
+    
+    if (path[0] == '/') {
+        // Absolute path - use root
+        name++;
+        dir_cluster = current_fs.root_dir_cluster;
+    } else {
+        // Relative path - use current directory
+        dir_cluster = current_fs.current_dir_cluster;
+        if (dir_cluster == 0 || dir_cluster < 2) {
+            dir_cluster = current_fs.root_dir_cluster;
+        }
+    }
 
-    fat32_dirent_t entry;
-    if (fat32_find_in_root(name, &entry) != 0) {
-        printf("[FAT32] File not found: %s\n", path);
+    // Load the directory
+    uint8_t dir_buffer[16384];
+    uint8_t channel, drive;
+    fat32_disk_to_ata(current_fs.disk, &channel, &drive);
+    uint32_t lba = fat32_cluster_to_lba(dir_cluster);
+    uint16_t sectors = current_fs.sectors_per_cluster;
+    if ((uint32_t)sectors * 512 > sizeof(dir_buffer)) {
+        sectors = sizeof(dir_buffer) / 512;
+    }
+    if (ata_read_sectors(channel, drive, lba, sectors, dir_buffer) != sectors) {
+        printf("[FAT32] Failed to read directory cluster %d\n", dir_cluster);
         return NULL;
     }
 
-    if (entry.attributes & ATTR_DIRECTORY) {
-        printf("[FAT32] %s is a directory, not a file\n", path);
+    // Find the file
+    uint8_t name83[11];
+    if (fat32_make_name83(name, name83) != 0) {
+        printf("[FAT32] Invalid 8.3 filename: %s\n", path);
         return NULL;
     }
 
-    uint32_t first_cluster = ((uint32_t)entry.first_cluster_high << 16)
-                           | (uint32_t)entry.first_cluster_low;
+    uint32_t max_entries = (current_fs.sectors_per_cluster * 512) / sizeof(fat32_dirent_t);
+    for (uint32_t i = 0; i < max_entries; i++) {
+        fat32_dirent_t *e = (fat32_dirent_t *)(dir_buffer + i * sizeof(fat32_dirent_t));
+        if (e->name[0] == 0x00) break;
+        if (e->name[0] == 0xE5 || e->attributes == ATTR_LFN) continue;
+        if (memcmp(e->name, name83, 11) == 0) {
+            if (e->attributes & ATTR_DIRECTORY) {
+                printf("[FAT32] %s is a directory, not a file\n", path);
+                return NULL;
+            }
 
-    open_file.first_cluster   = first_cluster;
-    open_file.current_cluster = first_cluster;
-    open_file.file_position   = 0;
-    open_file.file_size       = entry.file_size;
-    open_file.sector_offset   = 0;
-    open_file.disk            = current_fs.disk;
-    open_file.partition       = current_fs.partition;
-    open_file.attributes      = entry.attributes;
+            uint32_t first_cluster = ((uint32_t)e->first_cluster_high << 16) | (uint32_t)e->first_cluster_low;
 
-    if (debug_print_is_enabled()) {
-        uint8_t prev = vga_get_color();
-        vga_set_color(14, 0);
-        printf("[FAT32] Opened: %s (size=%d, cluster=%d)\n", path, entry.file_size, first_cluster);
-        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+            open_file.first_cluster   = first_cluster;
+            open_file.current_cluster = first_cluster;
+            open_file.file_position   = 0;
+            open_file.file_size       = e->file_size;
+            open_file.sector_offset   = 0;
+            open_file.disk            = current_fs.disk;
+            open_file.partition       = current_fs.partition;
+            open_file.attributes      = e->attributes;
+
+            if (debug_print_is_enabled()) {
+                uint8_t prev = vga_get_color();
+                vga_set_color(14, 0);
+                printf("[FAT32] Opened: %s (size=%d, cluster=%d)\n", path, e->file_size, first_cluster);
+                vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+            }
+            return &open_file;
+        }
     }
-    return &open_file;
+
+    printf("[FAT32] File not found: %s\n", path);
+    return NULL;
 }
 
 int fat32_read(fat32_file_t *file, void *buffer, size_t count) {
@@ -579,13 +645,22 @@ int fat32_write(const char *path, const void *buffer, size_t count) {
         return -1;
     }
     if (!path || !buffer) return -1;
-
-    if (fat32_load_root_directory() != 0) {
+    // Determine parent directory and filename
+    uint32_t parent_cluster;
+    fat32_dirent_t existing;
+    char filename[256];
+    int nav = fat32_navigate_path(path, &parent_cluster, &existing, filename);
+    if (nav < 0) {
+        printf("[FAT32] Path not found or invalid: %s\n", path);
         return -1;
     }
 
-    const char *name = path;
-    if (name[0] == '/') name++;
+    const char *name = filename;
+    if (!name || !name[0]) {
+        // No filename provided
+        printf("[FAT32] Invalid filename: %s\n", path);
+        return -1;
+    }
 
     uint8_t name83[11];
     if (fat32_make_name83(name, name83) != 0) {
@@ -593,12 +668,19 @@ int fat32_write(const char *path, const void *buffer, size_t count) {
         return -1;
     }
 
+    // Load parent directory cluster into buffer
+    uint8_t parent_buffer[16384];
+    if (fat32_load_directory_cluster(parent_cluster, parent_buffer, sizeof(parent_buffer)) != 0) {
+        return -1;
+    }
+
+    // Find entry or free slot
     uint32_t max_entries = (current_fs.sectors_per_cluster * 512) / sizeof(fat32_dirent_t);
     fat32_dirent_t *entry = NULL;
     fat32_dirent_t *free_entry = NULL;
 
     for (uint32_t i = 0; i < max_entries; i++) {
-        fat32_dirent_t *e = (fat32_dirent_t *)(root_dir_buffer + i * sizeof(fat32_dirent_t));
+        fat32_dirent_t *e = (fat32_dirent_t *)(parent_buffer + i * sizeof(fat32_dirent_t));
         if (e->name[0] == 0x00 && !free_entry) {
             free_entry = e;
             break;
@@ -613,9 +695,7 @@ int fat32_write(const char *path, const void *buffer, size_t count) {
         }
     }
 
-    if (!entry) {
-        entry = free_entry;
-    }
+    if (!entry) entry = free_entry;
     if (!entry) {
         printf("[FAT32] No free directory entries\n");
         return -1;
@@ -634,7 +714,16 @@ int fat32_write(const char *path, const void *buffer, size_t count) {
     entry->file_size = 0;
 
     if (count == 0) {
-        if (fat32_save_root_directory() != 0) return -1;
+        // Write parent directory back to disk
+        uint8_t channel, drive;
+        fat32_disk_to_ata(current_fs.disk, &channel, &drive);
+        uint32_t lba = fat32_cluster_to_lba(parent_cluster);
+        if (ata_write_sectors(channel, drive, lba, current_fs.sectors_per_cluster, parent_buffer) != current_fs.sectors_per_cluster) {
+            printf("[FAT32] Failed to write parent directory cluster %d\n", parent_cluster);
+            return -1;
+        }
+        // If parent is root, refresh root_dir_buffer
+        if (parent_cluster == current_fs.root_dir_cluster) fat32_load_root_directory();
         printf("[FAT32] Created empty file: %s\n", path);
         return 0;
     }
@@ -677,9 +766,20 @@ int fat32_write(const char *path, const void *buffer, size_t count) {
     entry->first_cluster_low  = (uint16_t)(first_cluster & 0xFFFF);
     entry->file_size = (uint32_t)count;
 
-    if (fat32_save_root_directory() != 0) {
+    // Write parent directory back to disk
+    fat32_disk_to_ata(current_fs.disk, &channel, &drive);
+    uint32_t lba = fat32_cluster_to_lba(parent_cluster);
+    if (ata_write_sectors(channel, drive, lba, current_fs.sectors_per_cluster, parent_buffer) != current_fs.sectors_per_cluster) {
+        printf("[FAT32] Failed to write parent directory cluster %d\n", parent_cluster);
         fat32_free_cluster_chain(first_cluster);
         return -1;
+    }
+
+    if (parent_cluster == current_fs.root_dir_cluster) {
+        if (fat32_load_root_directory() != 0) {
+            fat32_free_cluster_chain(first_cluster);
+            return -1;
+        }
     }
 
     printf("[FAT32] Wrote file: %s (%d bytes, first cluster=%d)\n", path, (int)count, first_cluster);
@@ -804,4 +904,382 @@ int fat32_stat(const char *path, fat32_dirent_t *entry) {
     if (!fs_mounted) { printf("[FAT32] File system not mounted\n"); return -1; }
     printf("[FAT32] Stat: %s\n", path);
     return -1;
+}
+
+// Helper: Load a directory cluster into a buffer
+static int fat32_load_directory_cluster(uint32_t cluster, uint8_t *buffer, size_t buffer_size) {
+    uint8_t channel, drive;
+    fat32_disk_to_ata(current_fs.disk, &channel, &drive);
+    
+    uint32_t lba = fat32_cluster_to_lba(cluster);
+    uint16_t sectors = current_fs.sectors_per_cluster;
+    
+    if ((uint32_t)sectors * 512 > buffer_size) {
+        sectors = buffer_size / 512;
+    }
+    
+    if (ata_read_sectors(channel, drive, lba, sectors, buffer) != sectors) {
+        printf("[FAT32] Failed to read directory cluster %d\n", cluster);
+        return -1;
+    }
+    
+    return 0;
+}
+
+// Helper: Find an entry in a directory cluster
+static int fat32_find_in_directory(uint32_t dir_cluster, const char *name, fat32_dirent_t *out) {
+    uint8_t dir_buffer[16384];
+    
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] Searching for '%s' in cluster %d\n", name, dir_cluster);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    
+    if (fat32_load_directory_cluster(dir_cluster, dir_buffer, sizeof(dir_buffer)) != 0) {
+        return -1;
+    }
+    
+    uint32_t max_entries = (current_fs.sectors_per_cluster * 512) / sizeof(fat32_dirent_t);
+    for (uint32_t i = 0; i < max_entries; i++) {
+        fat32_dirent_t *e = (fat32_dirent_t *)(dir_buffer + i * sizeof(fat32_dirent_t));
+        if (e->name[0] == 0x00) break;
+        if (e->name[0] == 0xE5 || e->attributes == ATTR_LFN) continue;
+        
+        if (debug_print_is_enabled()) {
+            char entry_name[32];
+            fat32_format_name(e, entry_name, sizeof(entry_name));
+            uint8_t prev = vga_get_color();
+            vga_set_color(14, 0);
+            printf("[FAT32]   Entry: '%s' (attr=0x%02x)\n", entry_name, e->attributes);
+            vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+        }
+        
+        if (fat32_name_match(e, name)) {
+            if (debug_print_is_enabled()) {
+                uint8_t prev = vga_get_color();
+                vga_set_color(14, 0);
+                printf("[FAT32]   Found match!\n");
+                vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+            }
+            memcpy(out, e, sizeof(fat32_dirent_t));
+            return 0;
+        }
+    }
+    
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32]   Not found\n");
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    
+    return -1;
+}
+
+// Helper: Parse path and navigate to the target directory/file
+// Returns the cluster of the parent directory and fills out the entry if found
+static int fat32_navigate_path(const char *path, uint32_t *parent_cluster, fat32_dirent_t *entry, char *filename) {
+    // Start from root or current directory
+    uint32_t cluster = (path[0] == '/') ? current_fs.root_dir_cluster : current_fs.current_dir_cluster;
+    
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] Navigating path: '%s' (start cluster=%d)\n", path, cluster);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    
+    // Skip leading slash
+    const char *p = path;
+    if (*p == '/') p++;
+    
+    // Parse path components
+    char component[256];
+    int comp_idx = 0;
+    
+    while (*p) {
+        if (*p == '/') {
+            if (comp_idx > 0) {
+                component[comp_idx] = '\0';
+                
+                if (debug_print_is_enabled()) {
+                    uint8_t prev = vga_get_color();
+                    vga_set_color(14, 0);
+                    printf("[FAT32]   Component: '%s'\n", component);
+                    vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+                }
+                
+                // Look up this component in the current directory
+                fat32_dirent_t dir_entry;
+                if (fat32_find_in_directory(cluster, component, &dir_entry) != 0) {
+                    return -1;  // Component not found
+                }
+                
+                if (!(dir_entry.attributes & ATTR_DIRECTORY)) {
+                    return -1;  // Not a directory
+                }
+                
+                // Move into this directory
+                cluster = ((uint32_t)dir_entry.first_cluster_high << 16) | (uint32_t)dir_entry.first_cluster_low;
+                comp_idx = 0;
+            }
+            p++;
+        } else {
+            if (comp_idx < 255) {
+                component[comp_idx++] = *p;
+            }
+            p++;
+        }
+    }
+    
+    // Last component is the filename
+    if (comp_idx > 0) {
+        component[comp_idx] = '\0';
+        
+        if (debug_print_is_enabled()) {
+            uint8_t prev = vga_get_color();
+            vga_set_color(14, 0);
+            printf("[FAT32]   Final component: '%s'\n", component);
+            vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+        }
+        
+        if (filename) {
+            int i = 0;
+            while (component[i] && i < 255) {
+                filename[i] = component[i];
+                i++;
+            }
+            filename[i] = '\0';
+        }
+        
+        // Try to find it
+        if (entry && fat32_find_in_directory(cluster, component, entry) == 0) {
+            *parent_cluster = cluster;
+            return 1;  // Found
+        }
+    }
+    
+    *parent_cluster = cluster;
+    return 0;  // Not found (but parent exists)
+}
+
+int fat32_mkdir(const char *path) {
+    if (!fs_mounted) {
+        printf("[FAT32] File system not mounted\n");
+        return -1;
+    }
+    
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] Creating directory: %s\n", path);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    
+    uint32_t parent_cluster;
+    fat32_dirent_t existing;
+    char dirname[256];
+    
+    int result = fat32_navigate_path(path, &parent_cluster, &existing, dirname);
+    if (result == 1) {
+        printf("[FAT32] Directory already exists: %s\n", path);
+        return -1;
+    }
+    
+    // Allocate a cluster for the new directory
+    uint32_t new_cluster;
+    if (fat32_allocate_cluster_chain(1, &new_cluster) != 0) {
+        printf("[FAT32] Failed to allocate cluster for directory\n");
+        return -1;
+    }
+    
+    // Initialize the directory with . and .. entries
+    uint8_t dir_buffer[16384];
+    memset(dir_buffer, 0, sizeof(dir_buffer));
+    
+    fat32_dirent_t *dot = (fat32_dirent_t *)dir_buffer;
+    memcpy(dot->name, ".          ", 11);
+    dot->attributes = ATTR_DIRECTORY;
+    dot->first_cluster_high = (uint16_t)((new_cluster >> 16) & 0xFFFF);
+    dot->first_cluster_low = (uint16_t)(new_cluster & 0xFFFF);
+    
+    fat32_dirent_t *dotdot = (fat32_dirent_t *)(dir_buffer + sizeof(fat32_dirent_t));
+    memcpy(dotdot->name, "..         ", 11);
+    dotdot->attributes = ATTR_DIRECTORY;
+    dotdot->first_cluster_high = (uint16_t)((parent_cluster >> 16) & 0xFFFF);
+    dotdot->first_cluster_low = (uint16_t)(parent_cluster & 0xFFFF);
+    
+    // Write the directory cluster
+    uint8_t channel, drive;
+    fat32_disk_to_ata(current_fs.disk, &channel, &drive);
+    uint32_t lba = fat32_cluster_to_lba(new_cluster);
+    if (ata_write_sectors(channel, drive, lba, current_fs.sectors_per_cluster, dir_buffer) != current_fs.sectors_per_cluster) {
+        printf("[FAT32] Failed to write directory cluster\n");
+        fat32_free_cluster_chain(new_cluster);
+        return -1;
+    }
+    
+    // Add entry to parent directory
+    uint8_t parent_buffer[16384];
+    if (fat32_load_directory_cluster(parent_cluster, parent_buffer, sizeof(parent_buffer)) != 0) {
+        fat32_free_cluster_chain(new_cluster);
+        return -1;
+    }
+    
+    uint8_t name83[11];
+    if (fat32_make_name83(dirname, name83) != 0) {
+        printf("[FAT32] Invalid directory name: %s\n", dirname);
+        fat32_free_cluster_chain(new_cluster);
+        return -1;
+    }
+    
+    // Find free entry in parent
+    uint32_t max_entries = (current_fs.sectors_per_cluster * 512) / sizeof(fat32_dirent_t);
+    fat32_dirent_t *free_entry = NULL;
+    for (uint32_t i = 0; i < max_entries; i++) {
+        fat32_dirent_t *e = (fat32_dirent_t *)(parent_buffer + i * sizeof(fat32_dirent_t));
+        if (e->name[0] == 0x00 || e->name[0] == 0xE5) {
+            free_entry = e;
+            break;
+        }
+    }
+    
+    if (!free_entry) {
+        printf("[FAT32] No free entries in parent directory\n");
+        fat32_free_cluster_chain(new_cluster);
+        return -1;
+    }
+    
+    memset(free_entry, 0, sizeof(fat32_dirent_t));
+    memcpy(free_entry->name, name83, 11);
+    free_entry->attributes = ATTR_DIRECTORY;
+    free_entry->first_cluster_high = (uint16_t)((new_cluster >> 16) & 0xFFFF);
+    free_entry->first_cluster_low = (uint16_t)(new_cluster & 0xFFFF);
+    
+    // Write parent directory back
+    lba = fat32_cluster_to_lba(parent_cluster);
+    if (ata_write_sectors(channel, drive, lba, current_fs.sectors_per_cluster, parent_buffer) != current_fs.sectors_per_cluster) {
+        printf("[FAT32] Failed to write parent directory\n");
+        fat32_free_cluster_chain(new_cluster);
+        return -1;
+    }
+    
+    // Reload root directory if we modified it
+    if (parent_cluster == current_fs.root_dir_cluster) {
+        fat32_load_root_directory();
+    }
+    
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] Created directory: %s (cluster=%d)\n", path, new_cluster);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    return 0;
+}
+
+int fat32_chdir(const char *path) {
+    if (!fs_mounted) {
+        printf("[FAT32] File system not mounted\n");
+        return -1;
+    }
+    
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] Changing directory to: %s\n", path);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    
+    uint32_t parent_cluster;
+    fat32_dirent_t entry;
+    char dirname[256];
+    
+    int result = fat32_navigate_path(path, &parent_cluster, &entry, dirname);
+    if (result != 1) {
+        printf("[FAT32] Directory not found: %s\n", path);
+        return -1;
+    }
+    
+    if (!(entry.attributes & ATTR_DIRECTORY)) {
+        printf("[FAT32] Not a directory: %s\n", path);
+        return -1;
+    }
+    
+    uint32_t new_cluster = ((uint32_t)entry.first_cluster_high << 16) | (uint32_t)entry.first_cluster_low;
+    current_fs.current_dir_cluster = new_cluster;
+    
+    // Update current path
+    if (path[0] == '/') {
+        // Absolute path - use as-is
+        int i = 0;
+        while (path[i] && i < 255) {
+            current_fs.current_path[i] = path[i];
+            i++;
+        }
+        current_fs.current_path[i] = '\0';
+    } else {
+        // Relative path - append to current
+        // First, handle special cases
+        if (dirname[0] == '.' && dirname[1] == '\0') {
+            // Stay in current directory
+            return 0;
+        } else if (dirname[0] == '.' && dirname[1] == '.' && dirname[2] == '\0') {
+            // Go up one level
+            int len = 0;
+            while (current_fs.current_path[len]) len++;
+            // Remove trailing slash if present
+            if (len > 1 && current_fs.current_path[len-1] == '/') {
+                len--;
+            }
+            // Find last slash
+            while (len > 0 && current_fs.current_path[len] != '/') {
+                len--;
+            }
+            if (len == 0) len = 1;  // Keep at least root /
+            current_fs.current_path[len] = '\0';
+        } else {
+            // Append directory name
+            int len = 0;
+            while (current_fs.current_path[len]) len++;
+            
+            // Add slash if not at root
+            if (len > 1 || (len == 1 && current_fs.current_path[0] != '/')) {
+                if (current_fs.current_path[len-1] != '/') {
+                    current_fs.current_path[len++] = '/';
+                }
+            } else if (len == 0) {
+                current_fs.current_path[len++] = '/';
+            }
+            
+            // Append dirname
+            int i = 0;
+            while (dirname[i] && len < 255) {
+                current_fs.current_path[len++] = dirname[i++];
+            }
+            current_fs.current_path[len] = '\0';
+        }
+    }
+    
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] Changed directory to: %s (cluster=%d)\n", current_fs.current_path, new_cluster);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    
+    return 0;
+}
+
+const char* fat32_getcwd(void) {
+    if (!fs_mounted) return NULL;
+    if (debug_print_is_enabled()) {
+        uint8_t prev = vga_get_color();
+        vga_set_color(14, 0);
+        printf("[FAT32] getcwd: path='%s' cluster=%d\n", current_fs.current_path, current_fs.current_dir_cluster);
+        vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
+    }
+    return current_fs.current_path[0] ? current_fs.current_path : "/";
 }

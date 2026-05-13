@@ -12,7 +12,9 @@ static int debug_print_enabled = 0;
 void debug_log_init(void) {
     debug_log_pos = 0;
     debug_log_overflow = 0;
-    debug_log_enabled = 0;
+    // Keep serial/VGA mirrored printf output enabled by default so
+    // headless serial mode remains usable during bring-up.
+    debug_log_enabled = 1;
     debug_print_enabled = 0;
     for (size_t i = 0; i < DEBUG_LOG_SIZE; i++) {
         debug_log[i] = '\0';

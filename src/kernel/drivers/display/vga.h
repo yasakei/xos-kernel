@@ -13,4 +13,11 @@ void vga_flush(void);           // update cursor after batch of putchar_raw call
 void vga_set_color(uint8_t fg, uint8_t bg);
 uint8_t vga_get_color(void);
 
+// Scrollback functions
+void vga_scrollback_up(int lines);
+void vga_scrollback_down(int lines);
+void vga_scrollback_reset(void);
+int vga_scrollback_is_active(void);
+void vga_scrollback_render(void);
+
 #endif

@@ -53,14 +53,18 @@ void serial_init(void) {
 // Queue one char — zero port I/O, returns instantly
 void serial_putchar(char c) {
     tx_push(c);
-    // Do NOT drain here — PIT handler drains at 100Hz
+    // Opportunistically drain so early boot messages are visible even
+    // before PIT is initialized.
+    serial_drain();
 }
 
 // Queue a string — zero port I/O, returns instantly
 void serial_write(const char *str) {
     for (int i = 0; str[i]; i++)
         tx_push(str[i]);
-    // Do NOT drain here — PIT handler drains at 100Hz
+    // Opportunistically drain so early boot messages are visible even
+    // before PIT is initialized.
+    serial_drain();
 }
 
 // Call this periodically (e.g. from PIT handler) to keep draining

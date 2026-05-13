@@ -6,7 +6,7 @@
 #   ./run.sh          — graphical window (PS/2 keyboard + VGA)
 #                       click the window to grab keyboard focus
 #   ./run.sh serial   — headless, serial ↔ stdio (type in terminal)
-#                       Ctrl+A then X to quit
+#                       Ctrl+C to quit
 
 OS_IMAGE="build/os.img"
 STORAGE_IMAGE="build/storage.img"
@@ -31,13 +31,13 @@ QEMU_COMMON=(
 )
 
 if [ "$1" = "serial" ]; then
-    echo "Booting XOS (serial mode) — type here, Ctrl+A X to quit"
+    echo "Booting XOS (serial mode) — direct COM1 on stdio, Ctrl+C to quit"
     echo ""
     qemu-system-x86_64 "${QEMU_COMMON[@]}" \
-        -nographic -serial mon:stdio \
+        -nographic -monitor none -serial stdio \
         -cpu host -enable-kvm 2>/dev/null || \
     qemu-system-x86_64 "${QEMU_COMMON[@]}" \
-        -nographic -serial mon:stdio
+        -nographic -monitor none -serial stdio
 else
     echo "Booting XOS (graphical) — click window for keyboard focus"
     qemu-system-x86_64 "${QEMU_COMMON[@]}" \

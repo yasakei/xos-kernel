@@ -5,7 +5,7 @@ jmp start
 
 ; Data area
 lba_sector dw 1       ; Start at LBA sector 1
-sectors_to_read db 127 ; Read 127 sectors (63 KB)
+sectors_to_read db 255 ; Read 255 sectors (~127 KB)
 load_segment dw 0x0800 ; Load at 0x0800:0000 = physical 0x8000
 boot_drive db 0
 

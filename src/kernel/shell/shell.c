@@ -107,9 +107,12 @@ static void cmd_help(void) {
     printf("  pci               PCI devices\n");
     printf("  uptime            Time since boot\n");
     printf("  xfetch            System info\n");
-    printf("  touch <file>      Create empty file in root\n");
+    printf("  touch <file>      Create empty file\n");
     printf("  echo <text> [>] <file>  Print text or write file\n");
-    printf("  rm <file>         Delete file from root\n");
+    printf("  rm <file>         Delete file\n");
+    printf("  mkdir <dir>       Create directory\n");
+    printf("  cd <dir>          Change directory\n");
+    printf("  pwd               Print working directory\n");
     printf("  log on|off|status Toggle verbose logging\n");
     printf("  exec <file>       Load ELF64 and run in Ring-3\n");
     printf("  usermode          Launch Ring-3 test task\n");
@@ -176,7 +179,7 @@ static void cmd_promptcolor(int argc, char **argv) {
 
 static void cmd_ls(void) {
     printf("\n");
-    fat32_list_root();
+    fat32_list_directory(NULL);  // NULL = list current directory
     printf("\n");
 }
 
@@ -185,10 +188,9 @@ static void cmd_cat(const char *filename) {
         printf("Usage: cat <filename>\n");
         return;
     }
-    char path[64];
-    path[0] = '/';
-    sh_strcpy(path + 1, filename);
-    fat32_file_t *f = fat32_open(path);
+    
+    // Just pass the filename as-is - fat32_open will handle current directory
+    fat32_file_t *f = fat32_open(filename);
     if (!f) { printf("cat: %s: not found\n", filename); return; }
     uint8_t buf[128];
     int total = 0, n;
@@ -304,11 +306,8 @@ static void cmd_touch(const char *filename) {
         return;
     }
 
-    char path[64];
-    path[0] = '/';
-    sh_strcpy(path + 1, filename);
-
-    if (fat32_create(path) == 0) {
+    // Just pass the filename as-is - fat32_create will handle current directory
+    if (fat32_create(filename) == 0) {
         printf("touch: created %s\n", filename);
     } else {
         printf("touch: failed to create %s\n", filename);
@@ -321,14 +320,49 @@ static void cmd_rm(const char *filename) {
         return;
     }
 
-    char path[64];
-    path[0] = '/';
-    sh_strcpy(path + 1, filename);
-
-    if (fat32_delete(path) == 0) {
+    // Just pass the filename as-is - fat32_delete will handle current directory
+    if (fat32_delete(filename) == 0) {
         printf("rm: deleted %s\n", filename);
     } else {
         printf("rm: failed to delete %s\n", filename);
+    }
+}
+
+static void cmd_mkdir(const char *dirname) {
+    if (!dirname || sh_strlen(dirname) == 0) {
+        printf("Usage: mkdir <directory>\n");
+        return;
+    }
+
+    // Pass the path as-is to fat32_mkdir (it handles both absolute and relative)
+    if (fat32_mkdir(dirname) == 0) {
+        printf("mkdir: created %s\n", dirname);
+    } else {
+        printf("mkdir: failed to create %s\n", dirname);
+    }
+}
+
+static void cmd_cd(const char *dirname) {
+    if (!dirname || sh_strlen(dirname) == 0) {
+        // cd with no args goes to root
+        if (fat32_chdir("/") != 0) {
+            printf("cd: failed to change to root directory\n");
+        }
+        return;
+    }
+
+    // Pass the path as-is to fat32_chdir (it handles both absolute and relative)
+    if (fat32_chdir(dirname) != 0) {
+        printf("cd: failed to change directory to %s\n", dirname);
+    }
+}
+
+static void cmd_pwd(void) {
+    const char *cwd = fat32_getcwd();
+    if (cwd) {
+        printf("%s\n", cwd);
+    } else {
+        printf("/\n");
     }
 }
 
@@ -400,14 +434,13 @@ static void cmd_echo(int argc, char **argv) {
     }
     text[pos] = '\0';
 
-    char path[64];
-    path[0] = '/';
-    sh_strcpy(path + 1, argv[redirect + 1]);
-
-    if (fat32_write(path, text, sh_strlen(text)) == 0) {
-        printf("echo: wrote %s\n", argv[redirect + 1]);
+    const char *filename = argv[redirect + 1];
+    
+    // Just pass the filename as-is - fat32_write will handle current directory
+    if (fat32_write(filename, text, sh_strlen(text)) == 0) {
+        printf("echo: wrote %s\n", filename);
     } else {
-        printf("echo: failed to write %s\n", argv[redirect + 1]);
+        printf("echo: failed to write %s\n", filename);
     }
 }
 
@@ -507,56 +540,64 @@ static int sh_readline(char *buf, int max) {
     char temp[SHELL_BUF_SIZE] = {0};
     
     while (1) {
-        char c = keyboard_getchar();
+        unsigned char c = (unsigned char)keyboard_getchar();
         
-        // Handle escape sequences (arrow keys)
-        if (c == 27) {  // ESC
-            char next = keyboard_getchar();
-            if (next == '[') {
-                char arrow = keyboard_getchar();
+        // Handle Page Up/Down for scrollback
+        if (c == (unsigned char)KEY_PGUP) {
+            vga_scrollback_up(5);
+            continue;
+        }
+        if (c == (unsigned char)KEY_PGDN) {
+            vga_scrollback_down(5);
+            continue;
+        }
+        
+        // Any other key resets scrollback
+        if (vga_scrollback_is_active() && c != (unsigned char)KEY_PGUP && c != (unsigned char)KEY_PGDN) {
+            vga_scrollback_reset();
+        }
+        
+        // Handle arrow keys
+        if (c == (unsigned char)KEY_UP) {
+            if (browse_pos > 0) {
+                // Save current input if at bottom
+                if (browse_pos == history_count) {
+                    for (int i = 0; i < pos; i++) temp[i] = buf[i];
+                    temp[pos] = '\0';
+                }
                 
-                if (arrow == 'A') {  // Up arrow
-                    if (browse_pos > 0) {
-                        // Save current input if at bottom
-                        if (browse_pos == history_count) {
-                            for (int i = 0; i < pos; i++) temp[i] = buf[i];
-                            temp[pos] = '\0';
-                        }
-                        
-                        browse_pos--;
-                        clear_line(pos);
-                        pos = 0;
-                        for (int i = 0; history[browse_pos][i]; i++) {
-                            buf[pos++] = history[browse_pos][i];
-                        }
-                        buf[pos] = '\0';
-                        print_line(buf);
-                        vga_flush();
-                    }
-                    continue;
+                browse_pos--;
+                clear_line(pos);
+                pos = 0;
+                for (int i = 0; history[browse_pos][i]; i++) {
+                    buf[pos++] = history[browse_pos][i];
                 }
-                else if (arrow == 'B') {  // Down arrow
-                    if (browse_pos < history_count) {
-                        browse_pos++;
-                        clear_line(pos);
-                        pos = 0;
-                        
-                        if (browse_pos == history_count) {
-                            // Restore saved input
-                            for (int i = 0; temp[i]; i++) {
-                                buf[pos++] = temp[i];
-                            }
-                        } else {
-                            for (int i = 0; history[browse_pos][i]; i++) {
-                                buf[pos++] = history[browse_pos][i];
-                            }
-                        }
-                        buf[pos] = '\0';
-                        print_line(buf);
-                        vga_flush();
+                buf[pos] = '\0';
+                print_line(buf);
+                vga_flush();
+            }
+            continue;
+        }
+        
+        if (c == (unsigned char)KEY_DOWN) {
+            if (browse_pos < history_count) {
+                browse_pos++;
+                clear_line(pos);
+                pos = 0;
+                
+                if (browse_pos == history_count) {
+                    // Restore saved input
+                    for (int i = 0; temp[i]; i++) {
+                        buf[pos++] = temp[i];
                     }
-                    continue;
+                } else {
+                    for (int i = 0; history[browse_pos][i]; i++) {
+                        buf[pos++] = history[browse_pos][i];
+                    }
                 }
+                buf[pos] = '\0';
+                print_line(buf);
+                vga_flush();
             }
             continue;
         }
@@ -606,8 +647,8 @@ static int sh_readline(char *buf, int max) {
         if (c < 32 || c > 126) continue;
         
         if (pos < max - 1) {
-            buf[pos++] = c;
-            printf("%c", c);
+            buf[pos++] = (char)c;
+            printf("%c", (char)c);
             vga_flush();
         }
     }
@@ -650,6 +691,9 @@ static void sh_parse_and_run(char *line) {
     else if (sh_strcmp(cmd, "reboot")  == 0) cmd_reboot();
     else if (sh_strcmp(cmd, "colors")  == 0) cmd_colors();
     else if (sh_strcmp(cmd, "promptcolor") == 0) cmd_promptcolor(argc, argv);
+    else if (sh_strcmp(cmd, "mkdir")   == 0) cmd_mkdir(argc > 1 ? argv[1] : "");
+    else if (sh_strcmp(cmd, "cd")      == 0) cmd_cd(argc > 1 ? argv[1] : "");
+    else if (sh_strcmp(cmd, "pwd")     == 0) cmd_pwd();
     else printf("%s: command not found  (type 'help')\n", cmd);
 }
 

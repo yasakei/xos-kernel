@@ -99,6 +99,8 @@ typedef struct {
     uint16_t bytes_per_sector;      // Bytes per sector
     uint8_t  sectors_per_cluster;   // Sectors per cluster
     uint32_t total_clusters;        // Total clusters
+    uint32_t current_dir_cluster;   // Current working directory cluster
+    char     current_path[256];     // Current working directory path
 } fat32_fs_t;
 
 // Mount FAT32 file system
@@ -139,5 +141,14 @@ void fat32_closedir(fat32_dir_t *dir);
 
 // Get file info
 int fat32_stat(const char *path, fat32_dirent_t *entry);
+
+// Create directory
+int fat32_mkdir(const char *path);
+
+// Change directory
+int fat32_chdir(const char *path);
+
+// Get current working directory
+const char* fat32_getcwd(void);
 
 #endif

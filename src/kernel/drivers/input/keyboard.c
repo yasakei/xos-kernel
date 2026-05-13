@@ -33,6 +33,15 @@ static const char kbdus_shift[128] = {
 };
 
 static volatile int shift_held = 0;
+static volatile int extended = 0;
+
+// Special key codes (above ASCII range)
+#define KEY_UP    0x80
+#define KEY_DOWN  0x81
+#define KEY_LEFT  0x82
+#define KEY_RIGHT 0x83
+#define KEY_PGUP  0x84
+#define KEY_PGDN  0x85
 
 // IRQ1 handler — not used for input, just ACKs
 static void keyboard_callback(struct registers *regs) {
@@ -54,13 +63,36 @@ char keyboard_getchar(void) {
         if (inb_kb(0x64) & 0x01) {
             uint8_t sc = inb_kb(0x60);
 
+            // Handle extended scancode prefix
+            if (sc == 0xE0) {
+                extended = 1;
+                continue;
+            }
+
             // Track shift
             if (sc == 0x2A || sc == 0x36) { shift_held = 1; continue; }
             if (sc == 0xAA || sc == 0xB6) { shift_held = 0; continue; }
 
+            // Handle extended keys (arrow keys) BEFORE checking bit 7
+            if (extended) {
+                extended = 0;
+                // Ignore release codes for extended keys too
+                if (sc & 0x80) continue;
+                
+                switch (sc) {
+                    case 0x48: return (char)KEY_UP;      // Up arrow
+                    case 0x50: return (char)KEY_DOWN;    // Down arrow
+                    case 0x4B: return (char)KEY_LEFT;    // Left arrow
+                    case 0x4D: return (char)KEY_RIGHT;   // Right arrow
+                    case 0x49: return (char)KEY_PGUP;    // Page Up
+                    case 0x51: return (char)KEY_PGDN;    // Page Down
+                    default: continue;
+                }
+            }
+
             // Ignore key releases (bit 7 set)
             if (sc & 0x80) continue;
-            if (sc >= 128)  continue;
+            if (sc >= 128) continue;
 
             char c = shift_held ? kbdus_shift[sc] : kbdus[sc];
             if (c) return c;
@@ -72,6 +104,25 @@ char keyboard_getchar(void) {
             char c = (char)inb_kb(0x3F8);
             if (c == '\r') c = '\n';
             if (c == 127)  c = '\b';   // DEL -> backspace
+            
+            // Handle ANSI escape sequences from serial
+            if (c == 27) {  // ESC
+                // Check for escape sequence
+                if (inb_kb(0x3FD) & 0x01) {
+                    char next = (char)inb_kb(0x3F8);
+                    if (next == '[') {
+                        if (inb_kb(0x3FD) & 0x01) {
+                            char arrow = (char)inb_kb(0x3F8);
+                            switch (arrow) {
+                                case 'A': return (char)KEY_UP;
+                                case 'B': return (char)KEY_DOWN;
+                                case 'C': return (char)KEY_RIGHT;
+                                case 'D': return (char)KEY_LEFT;
+                            }
+                        }
+                    }
+                }
+            }
             return c;
         }
     }

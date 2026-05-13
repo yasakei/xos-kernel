@@ -7,7 +7,8 @@
 // Maximum number of concurrent tasks
 #define MAX_TASKS        8
 
-// Stack size per task (16 KB)
+// Stack size per task. Four pages gives enough room for C call depth,
+// printf-heavy paths, and interrupt entry frames.
 #define TASK_STACK_SIZE  (16 * 1024)
 
 // Task states

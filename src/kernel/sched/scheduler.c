@@ -93,15 +93,20 @@ int scheduler_create_task(const char *name, void (*entry)(void)) {
     }
     t->name[i] = '\0';
 
-    // Allocate stack (4 pages = 16KB)
+    // Allocate a 16 KB kernel stack as four consecutive pages.
+    // The PMM allocates pages sequentially from low memory, so this remains
+    // a valid identity-mapped region for the current kernel setup.
     void *stack_bottom = pmm_alloc_page();
     if (!stack_bottom) {
         printf("[SCHED] Failed to allocate stack for task %s\n", name);
         return -1;
     }
-    pmm_alloc_page();  // page 2
-    pmm_alloc_page();  // page 3
-    pmm_alloc_page();  // page 4
+    for (int p = 1; p < 4; p++) {
+        if (!pmm_alloc_page()) {
+            printf("[SCHED] Failed to allocate stack page %d for task %s\n", p, name);
+            return -1;
+        }
+    }
 
     t->stack_top = (uint64_t)stack_bottom + TASK_STACK_SIZE;
     t->user_stack_bottom = 0;
@@ -165,15 +170,18 @@ int scheduler_create_user_task(const char *name, void (*entry)(void)) {
     }
     t->name[i] = '\0';
 
-    // Allocate kernel stack (16 KB) for the task while it is executing in kernel mode.
+    // Allocate a 16 KB kernel stack as four consecutive pages for bootstrap.
     void *kernel_stack_bottom = pmm_alloc_page();
     if (!kernel_stack_bottom) {
         printf("[SCHED] Failed to allocate kernel stack for user task %s\n", name);
         return -1;
     }
-    pmm_alloc_page();
-    pmm_alloc_page();
-    pmm_alloc_page();
+    for (int p = 1; p < 4; p++) {
+        if (!pmm_alloc_page()) {
+            printf("[SCHED] Failed to allocate kernel stack page %d for user task %s\n", p, name);
+            return -1;
+        }
+    }
     t->stack_top = (uint64_t)kernel_stack_bottom + TASK_STACK_SIZE;
 
     // Allocate separate user stack (4 KB)
@@ -216,8 +224,12 @@ void scheduler_tick(void) {
     }
 
     int next = find_next_ready_task();
-    if (next == -1) return;
-    if (next == current_task_id) return;
+    if (next == -1) {
+        return;
+    }
+    if (next == current_task_id) {
+        return;
+    }
 
     int old_id = current_task_id;
     current_task_id = next;
@@ -267,7 +279,9 @@ void scheduler_start(void) {
     if (debug_print_is_enabled()) {
         printf("[SCHED] Starting first task: %s (slot=%d)\n", tasks[next].name, next);
     }
-    __asm__ volatile("sti");  // Enable interrupts before starting first task
+    // Do NOT enable interrupts here; switch into the first task atomically
+    // so IRQs won't run with the wrong kernel stack. The assembly bootstrap
+    // will enable interrupts after switching stacks.
     scheduler_start_first_task(&tasks[next].ctx);
 }
 

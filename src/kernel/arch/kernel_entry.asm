@@ -52,7 +52,10 @@ kernel_entry:
     mov cr0, eax
 
     ; 9. Load 64-bit GDT
-    lgdt [gdt64.pointer]
+    ; Use an explicit 32-bit absolute pointer register here to avoid any
+    ; mode-dependent memory operand ambiguity at the IA-32e transition point.
+    mov eax, gdt64.pointer
+    lgdt [eax]
 
     ; 10. Jump to 64-bit mode
     jmp 0x08:long_mode

@@ -16,5 +16,6 @@ scheduler_start_first_task:
     mov rbp, [rdi + 40]
     ; Switch to the task's stack
     mov rsp, [rdi + 48]
-    ; Jump to entry point
+    ; Enable interrupts on the task's kernel stack, then jump to entry point
+    sti
     jmp [rdi + 56]
