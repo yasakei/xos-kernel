@@ -1,19 +1,47 @@
+// -------------------------------------------------------------------
+// mit license
+// 
+// copyright (c) 2026 xos
+// 
+// permission is hereby granted, free of charge, to any person
+// obtaining a copy of this software and associated documentation
+// files (the "software"), to deal in the software without
+// restriction, including without limitation the rights to use,
+// copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the software, and to permit persons to whom the
+// software is furnished to do so, subject to the following
+// conditions:
+// 
+// the above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the software.
+// 
+// the software is provided "as is", without warranty of any kind,
+// express or implied, including but not limited to the warranties
+// of merchantability, fitness for a particular purpose and
+// noninfringement. in no event shall the authors or copyright
+// holders be liable for any claim, damages or other liability,
+// whether in an action of contract, tort or otherwise, arising
+// from, out of or in connection with the software or the use or
+// other dealings in the software.
+// -------------------------------------------------------------------
+
 #include "printf.h"
 #include "debuglog.h"
 #include "../drivers/display/vga.h"
 #include "../drivers/serial/serial.h"
 #include <stdarg.h>
 
-// Write char to VGA (raw, no cursor) + debug log + serial TX queue (no wait)
+// write a single character to vga, debug log, and serial
 static void put_char(char c) {
     vga_putchar_raw(c);
     debug_log_putchar(c);
-    // Queue to serial ring buffer — returns instantly, no port I/O
+    // push to serial ring buffer — returns instantly, no port i/o wait
     if (debug_log_is_enabled()) {
         serial_putchar(c);
     }
 }
 
+// print a number in a given base, with optional padding
 static void print_int(long val, int base, int width, char pad) {
     char buf[64];
     int i = 0;
@@ -33,19 +61,20 @@ static void print_int(long val, int base, int width, char pad) {
     
     if (is_neg) buf[i++] = '-';
     
-    // Calculate how many padding chars we need
+    // figure out how many padding characters we need
     int num_len = i;
     int pad_count = (width > num_len) ? (width - num_len) : 0;
     
-    // Print padding first (left-pad)
+    // left-pad with the padding character
     for (int j = 0; j < pad_count; j++) {
         put_char(pad);
     }
     
-    // Then print the number (reversed from buffer)
+    // then print the number (reversed from buffer)
     while (i > 0) put_char(buf[--i]);
 }
 
+// main printf function - handles %s, %d, %x, %p, %c, and %%
 void printf(const char *format, ...) {
     va_list args;
     va_start(args, format);
@@ -54,7 +83,7 @@ void printf(const char *format, ...) {
         if (*format == '%') {
             format++;
             
-            // Parse width and padding
+            // parse optional width and padding
             int width = 0;
             char pad = ' ';
             if (*format == '0') {
@@ -89,5 +118,5 @@ void printf(const char *format, ...) {
     }
 
     va_end(args);
-    // Cursor update deferred — call vga_flush() explicitly when needed
+    // cursor update is deferred — call vga_flush() explicitly when needed
 }

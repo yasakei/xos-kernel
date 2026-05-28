@@ -1,3 +1,30 @@
+// -------------------------------------------------------------------
+// mit license
+// 
+// copyright (c) 2026 xos
+// 
+// permission is hereby granted, free of charge, to any person
+// obtaining a copy of this software and associated documentation
+// files (the "software"), to deal in the software without
+// restriction, including without limitation the rights to use,
+// copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the software, and to permit persons to whom the
+// software is furnished to do so, subject to the following
+// conditions:
+// 
+// the above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the software.
+// 
+// the software is provided "as is", without warranty of any kind,
+// express or implied, including but not limited to the warranties
+// of merchantability, fitness for a particular purpose and
+// noninfringement. in no event shall the authors or copyright
+// holders be liable for any claim, damages or other liability,
+// whether in an action of contract, tort or otherwise, arising
+// from, out of or in connection with the software or the use or
+// other dealings in the software.
+// -------------------------------------------------------------------
+
 #include "syscall.h"
 #include "../idt.h"
 #include "../lib/printf.h"
@@ -6,19 +33,20 @@
 #include "../sched/scheduler.h"
 #include <stdint.h>
 
-// int 0x80 handler — called from Ring-3 via interrupt
+// the int 0x80 handler — called from user mode via interrupt
+// dispatches based on the syscall number in rax
 static void syscall_handler(struct registers *regs) {
     uint64_t syscall_num = regs->rax;
 
     switch (syscall_num) {
         case SYS_WRITE: {
-            // rdi = pointer to null-terminated string
+            // rdi = pointer to a null-terminated string
             const char *str = (const char *)regs->rdi;
-            // Basic safety: only print if pointer looks valid
+            // basic safety check: make sure the pointer is in a reasonable range
             if (str && (uint64_t)str > 0x1000) {
                 printf("%s", str);
             }
-            regs->rax = 0;  // return 0 = success
+            regs->rax = 0;  // return 0 on success
             break;
         }
         case SYS_YIELD: {
@@ -28,7 +56,7 @@ static void syscall_handler(struct registers *regs) {
         }
         case SYS_EXIT: {
             printf("[SYSCALL] Task exited with code %d\n", (int)regs->rdi);
-            // Mark current task as dead and yield
+            // mark the task as dead and yield away the rest of its timeslice
             scheduler_yield();
             regs->rax = 0;
             break;
@@ -41,7 +69,7 @@ static void syscall_handler(struct registers *regs) {
 }
 
 void syscall_init(void) {
-    // Register int 0x80 (IDT entry 0x80 = 128)
+    // register the c handler on idt entry 0x80 (128)
     register_interrupt_handler(0x80, syscall_handler);
     if (debug_print_is_enabled()) {
         uint8_t prev = vga_get_color();

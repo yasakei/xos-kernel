@@ -1,10 +1,37 @@
+// -------------------------------------------------------------------
+// mit license
+// 
+// copyright (c) 2026 xos
+// 
+// permission is hereby granted, free of charge, to any person
+// obtaining a copy of this software and associated documentation
+// files (the "software"), to deal in the software without
+// restriction, including without limitation the rights to use,
+// copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the software, and to permit persons to whom the
+// software is furnished to do so, subject to the following
+// conditions:
+// 
+// the above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the software.
+// 
+// the software is provided "as is", without warranty of any kind,
+// express or implied, including but not limited to the warranties
+// of merchantability, fitness for a particular purpose and
+// noninfringement. in no event shall the authors or copyright
+// holders be liable for any claim, damages or other liability,
+// whether in an action of contract, tort or otherwise, arising
+// from, out of or in connection with the software or the use or
+// other dealings in the software.
+// -------------------------------------------------------------------
+
 #include "partition.h"
 #include "../drivers/storage/ata.h"
 #include "../lib/printf.h"
 #include "../lib/debuglog.h"
 #include "../drivers/display/vga.h"
 
-// Simple memcpy implementation for freestanding environment
+// simple memcpy implementation for freestanding environment
 static void* memcpy(void *dest, const void *src, int n) {
     uint8_t *d = (uint8_t *)dest;
     const uint8_t *s = (const uint8_t *)src;
@@ -18,6 +45,7 @@ static void* memcpy(void *dest, const void *src, int n) {
 static partition_t partitions[MAX_PARTITIONS];
 static int partition_count = 0;
 
+// convert our disk numbering to ata channel/drive
 static void partition_disk_to_ata(uint8_t disk, uint8_t *channel, uint8_t *drive) {
     switch (disk) {
         case 0:
@@ -39,6 +67,7 @@ static void partition_disk_to_ata(uint8_t disk, uint8_t *channel, uint8_t *drive
     }
 }
 
+// return a human-readable name for a partition type
 const char* partition_type_name(uint8_t type) {
     switch (type) {
         case PART_TYPE_UNUSED:    return "Unused";
@@ -53,6 +82,7 @@ const char* partition_type_name(uint8_t type) {
     }
 }
 
+// read the mbr on a disk and detect partitions
 int partition_detect(uint8_t disk) {
     if (debug_print_is_enabled()) {
         uint8_t prev = vga_get_color();
@@ -61,7 +91,7 @@ int partition_detect(uint8_t disk) {
         vga_set_color(prev & 0x0F, (prev >> 4) & 0x0F);
     }
     
-    // Read MBR (sector 0)
+    // read mbr (sector 0)
     mbr_t mbr;
     uint8_t channel, drive;
     partition_disk_to_ata(disk, &channel, &drive);
@@ -71,7 +101,7 @@ int partition_detect(uint8_t disk) {
         return -1;
     }
     
-    // Verify boot signature
+    // verify boot signature
     if (mbr.signature != 0xAA55) {
         printf("[PARTITION] Invalid MBR signature: 0x%04x\n", mbr.signature);
         return -1;
@@ -79,11 +109,11 @@ int partition_detect(uint8_t disk) {
     
     partition_count = 0;
     
-    // Parse partition entries
+    // parse the four primary partition entries
     for (int i = 0; i < 4; i++) {
         mbr_partition_t *part = &mbr.partitions[i];
         
-        // Skip empty partitions
+        // skip empty partitions
         if (part->type == PART_TYPE_UNUSED) continue;
         
         partition_t *pinfo = &partitions[partition_count];
@@ -122,12 +152,13 @@ int partition_detect(uint8_t disk) {
     return partition_count;
 }
 
+// get info about a specific partition by disk and index
 int partition_get_info(uint8_t disk, uint8_t partition_index, partition_t *info) {
     if (partition_index >= partition_count) {
         return -1;
     }
     
-    // Find partition with matching disk and index
+    // find the matching partition entry
     for (int i = 0; i < partition_count; i++) {
         partition_t *p = &partitions[i];
         if (p->disk == disk && p->partition_index == partition_index) {
@@ -139,6 +170,7 @@ int partition_get_info(uint8_t disk, uint8_t partition_index, partition_t *info)
     return -1;
 }
 
+// return how many partitions exist on a given disk
 int partition_get_count(uint8_t disk) {
     int count = 0;
     for (int i = 0; i < partition_count; i++) {

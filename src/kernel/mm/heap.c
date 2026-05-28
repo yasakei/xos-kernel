@@ -1,23 +1,50 @@
+// -------------------------------------------------------------------
+// mit license
+// 
+// copyright (c) 2026 xos
+// 
+// permission is hereby granted, free of charge, to any person
+// obtaining a copy of this software and associated documentation
+// files (the "software"), to deal in the software without
+// restriction, including without limitation the rights to use,
+// copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the software, and to permit persons to whom the
+// software is furnished to do so, subject to the following
+// conditions:
+// 
+// the above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the software.
+// 
+// the software is provided "as is", without warranty of any kind,
+// express or implied, including but not limited to the warranties
+// of merchantability, fitness for a particular purpose and
+// noninfringement. in no event shall the authors or copyright
+// holders be liable for any claim, damages or other liability,
+// whether in an action of contract, tort or otherwise, arising
+// from, out of or in connection with the software or the use or
+// other dealings in the software.
+// -------------------------------------------------------------------
+
 #include "heap.h"
 #include "pmm.h"
 #include "../lib/printf.h"
 #include <stdint.h>
 
-// A native rapid Sequential Bump-Allocator kernel heap
+// a simple sequential bump-allocator kernel heap
 
 static uint8_t* heap_cursor = NULL;
 static size_t heap_remaining = 0;
 
+// allocate memory - aligns to 8-byte boundaries, grabs new pages from pmm as needed
 void* malloc(size_t size) {
-    // Force 8-byte boundaries structurally matching standard LibC parameters!
+    // make sure the size is aligned to 8 bytes
     if (size == 0) return NULL;
     if (size % 8 != 0) {
         size += (8 - (size % 8));
     }
     
-    // If the active physical page frame doesn't hold enough memory blocks, ping PMM!
+    // grab a new page from pmm if we don't have room
     if (heap_cursor == NULL || heap_remaining < size) {
-        // Request a brand new pristine 4KB chunk organically strictly from the physical motherboard!
         heap_cursor = (uint8_t*)pmm_alloc_page();
         if(!heap_cursor) return NULL;
         heap_remaining = 4096;
@@ -30,9 +57,9 @@ void* malloc(size_t size) {
     return allocated_memory;
 }
 
+// this is a bump allocator, so we can't actually free individual allocations
 void free(void* ptr) {
     (void)ptr; 
-    // Disclaimer: An ultra-basic sequential bump-allocator fundamentally cannot actually 'free' memory internally! 
-    // True free() logic strictly requires deploying complicated Header Checksums identically tracking list bounds. 
-    // It remains pseudo-mapped but strictly harmless for basic structural tests natively.
+    // a real free() would need a proper heap with linked lists and metadata
+    // for now this is a no-op, which is fine for basic testing
 }

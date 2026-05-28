@@ -1,3 +1,30 @@
+// -------------------------------------------------------------------
+// mit license
+// 
+// copyright (c) 2026 xos
+// 
+// permission is hereby granted, free of charge, to any person
+// obtaining a copy of this software and associated documentation
+// files (the "software"), to deal in the software without
+// restriction, including without limitation the rights to use,
+// copy, modify, merge, publish, distribute, sublicense, and/or
+// sell copies of the software, and to permit persons to whom the
+// software is furnished to do so, subject to the following
+// conditions:
+// 
+// the above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the software.
+// 
+// the software is provided "as is", without warranty of any kind,
+// express or implied, including but not limited to the warranties
+// of merchantability, fitness for a particular purpose and
+// noninfringement. in no event shall the authors or copyright
+// holders be liable for any claim, damages or other liability,
+// whether in an action of contract, tort or otherwise, arising
+// from, out of or in connection with the software or the use or
+// other dealings in the software.
+// -------------------------------------------------------------------
+
 #include "shell.h"
 #include "../lib/printf.h"
 #include "../drivers/display/vga.h"
@@ -15,6 +42,7 @@
 #include "../arch/syscall.h"
 #include "../arch/gdt.h"
 #include "../arch/elf.h"
+#include "../drivers/network/net.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -22,16 +50,16 @@
 #define MAX_ARGS        16
 #define HISTORY_SIZE    16
 
-// Default prompt colors (foreground, background)
+// default prompt colors (foreground, background)
 static uint8_t shell_prompt_fg = 2; // green
 static uint8_t shell_prompt_bg = 0; // black
 
-// Command history
+// command history ring buffer
 static char history[HISTORY_SIZE][SHELL_BUF_SIZE];
 static int history_count = 0;
 static int history_pos = 0;
 
-// VGA color names for convenience
+// vga color names for convenience
 static const char *vga_color_names[16] = {
     "black", "blue", "green", "cyan",
     "red", "magenta", "brown", "light gray",
@@ -39,6 +67,7 @@ static const char *vga_color_names[16] = {
     "light red", "light magenta", "yellow", "white"
 };
 
+// tiny string helpers so we don't need libc
 static int sh_strlen(const char *s) {
     int n = 0; while (s[n]) n++; return n;
 }
@@ -69,11 +98,11 @@ static inline uint8_t inb_sh(uint16_t port) {
     return ret;
 }
 
-// Print string padded to 'width' chars — single vga_flush at the end
+// print a string padded to 'width' chars with a single flush at the end
 static void sh_print_padded(const char *s, int width) {
     extern int debug_log_is_enabled(void);
     int len = sh_strlen(s);
-    // Write string directly to VGA raw (no flush per char)
+    // write string to vga raw (no flush per char)
     for (int i = 0; s[i]; i++) {
         vga_putchar_raw(s[i]);
         debug_log_putchar(s[i]);
@@ -81,7 +110,7 @@ static void sh_print_padded(const char *s, int width) {
             serial_putchar(s[i]);
         }
     }
-    // Pad with spaces
+    // pad with spaces
     for (int i = len; i < width; i++) {
         vga_putchar_raw(' ');
         debug_log_putchar(' ');
@@ -89,11 +118,12 @@ static void sh_print_padded(const char *s, int width) {
             serial_putchar(' ');
         }
     }
-    // No flush here — caller flushes after the full line
+    // no flush here — caller flushes after the full line
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+// ── commands ──────────────────────────────────────────────────────────────────
 
+// show the help text listing all available commands
 static void cmd_help(void) {
     printf("\n");
     printf("  XOS Shell Commands\n");
@@ -121,10 +151,12 @@ static void cmd_help(void) {
     printf("\n");
 }
 
+// clear the screen
 static void cmd_clear(void) {
     vga_clear();
 }
 
+// show the vga color palette
 static void cmd_colors(void) {
     printf("\nVGA color palette:\n");
     uint8_t prev = vga_get_color();
@@ -139,9 +171,10 @@ static void cmd_colors(void) {
     printf("\nUse: promptcolor <fg> <bg> (0-15) or named color\n");
 }
 
+// parse a color argument (number 0-15 or named color)
 static int parse_color_arg(const char *s) {
     if (!s) return -1;
-    // numeric
+    // try numeric first
     int v = 0;
     int i = 0; int isnum = 1;
     while (s[i]) { if (s[i] < '0' || s[i] > '9') { isnum = 0; break; } i++; }
@@ -150,13 +183,14 @@ static int parse_color_arg(const char *s) {
         if (v >= 0 && v < 16) return v;
         return -1;
     }
-    // name lookup
+    // fall back to color name lookup
     for (int j = 0; j < 16; j++) {
         if (sh_strcasecmp(s, vga_color_names[j]) == 0) return j;
     }
     return -1;
 }
 
+// set the prompt foreground and background colors
 static void cmd_promptcolor(int argc, char **argv) {
     if (argc == 1) {
         printf("Current prompt color: fg=%d bg=%d\n", shell_prompt_fg, shell_prompt_bg);
@@ -177,19 +211,105 @@ static void cmd_promptcolor(int argc, char **argv) {
     printf("Prompt color set: fg=%d bg=%d\n", fg, bg);
 }
 
+// parse an ipv4 address string into four octets
+static int parse_ip4(const char *s, uint8_t *octets) {
+    int i = 0, num = 0;
+    while (*s && i < 4) {
+        if (*s >= '0' && *s <= '9') {
+            num = num * 10 + (*s - '0');
+            if (num > 255) return -1;
+        } else if (*s == '.') {
+            octets[i++] = num & 0xFF;
+            num = 0;
+        } else {
+            return -1;
+        }
+        s++;
+    }
+    if (i == 3) octets[3] = num & 0xFF;
+    return (i == 3 && num <= 255) ? 0 : -1;
+}
+
+// send icmp echo requests to a target
+static void cmd_ping(int argc, char **argv) {
+    if (argc < 2) {
+        printf("Usage: ping [-c count] <host>\n");
+        return;
+    }
+    int count = 4;
+    const char *host = NULL;
+    if (argc >= 3 && sh_strcmp(argv[1], "-c") == 0) {
+        const char *c_str = argv[2];
+        count = 0;
+        while (*c_str >= '0' && *c_str <= '9') {
+            count = count * 10 + (*c_str - '0');
+            c_str++;
+        }
+        host = argv[3];
+    } else {
+        host = argv[1];
+    }
+    if (!host) {
+        printf("Usage: ping [-c count] <host>\n");
+        return;
+    }
+    uint8_t octets[4] = {0};
+    if (parse_ip4(host, octets) != 0) {
+        printf("ping: invalid address\n");
+        return;
+    }
+    uint32_t target_ip = ((uint32_t)octets[0] << 24) | 
+                        ((uint32_t)octets[1] << 16) | 
+                        ((uint32_t)octets[2] << 8) | 
+                        ((uint32_t)octets[3]);
+    printf("PING %d.%d.%d.%d (%d.%d.%d.%d) 56(84) bytes of data.\n",
+           octets[0], octets[1], octets[2], octets[3],
+           octets[0], octets[1], octets[2], octets[3]);
+    for (int seq = 1; seq <= count; seq++) {
+        net_send_icmp_echo(target_ip, seq);
+        printf("Sent ICMP echo request %d\n", seq);
+        vga_flush();
+        if (seq < count) {
+            pit_sleep_ms(1000);
+        }
+    }
+}
+
+// send an arp request for a target ip
+static void cmd_arp(int argc, char **argv) {
+    if (argc < 2) {
+        printf("Usage: arp <host>\n");
+        return;
+    }
+    uint8_t octets[4] = {0};
+    if (parse_ip4(argv[1], octets) != 0) {
+        printf("arp: invalid address\n");
+        return;
+    }
+    uint32_t target_ip = ((uint32_t)octets[0] << 24) | 
+                        ((uint32_t)octets[1] << 16) | 
+                        ((uint32_t)octets[2] << 8) | 
+                        ((uint32_t)octets[3]);
+    printf("ARPING %d.%d.%d.%d from 127.0.0.1\n",
+           octets[0], octets[1], octets[2], octets[3]);
+    net_send_arp_request(target_ip);
+}
+
+// list the current directory
 static void cmd_ls(void) {
     printf("\n");
-    fat32_list_directory(NULL);  // NULL = list current directory
+    fat32_list_directory(NULL);  // null = list current directory
     printf("\n");
 }
 
+// print the contents of a file
 static void cmd_cat(const char *filename) {
     if (!filename || sh_strlen(filename) == 0) {
         printf("Usage: cat <filename>\n");
         return;
     }
     
-    // Just pass the filename as-is - fat32_open will handle current directory
+    // pass the filename as-is — fat32_open handles current directory
     fat32_file_t *f = fat32_open(filename);
     if (!f) { printf("cat: %s: not found\n", filename); return; }
     uint8_t buf[128];
@@ -205,6 +325,7 @@ static void cmd_cat(const char *filename) {
     printf("\n");
 }
 
+// show physical memory usage stats
 static void cmd_meminfo(void) {
     pmm_stats_t s;
     pmm_get_stats(&s);
@@ -222,21 +343,25 @@ static void cmd_meminfo(void) {
     printf("\n");
 }
 
+// show running tasks
 static void cmd_tasks(void) {
     printf("\n");
     scheduler_dump();
 }
 
+// scan and list pci devices
 static void cmd_pci(void) {
     pci_init();
 }
 
+// show system uptime
 static void cmd_uptime(void) {
     uint64_t ticks = pit_get_ticks();
     printf("Uptime: %d.%02d s (%d ticks)\n",
            (int)(ticks/100), (int)(ticks%100), (int)ticks);
 }
 
+// show the xfetch system info splash
 static void cmd_xfetch(void) {
     pmm_stats_t mem;
     pmm_get_stats(&mem);
@@ -245,7 +370,7 @@ static void cmd_xfetch(void) {
     uint32_t used_mb = (uint32_t)((mem.used_pages * mem.page_size) / (1024*1024));
     uint32_t tot_mb  = (uint32_t)(((mem.total_pages - mem.reserved_pages) * mem.page_size) / (1024*1024));
 
-    // Art lines exactly as in xos.txt (backslash = \\, no other escapes)
+    // art lines exactly as in xos.txt (backslash = \\, no other escapes)
     static const char *art[10] = {
         "$\\   $\\  $$$\\   $$$\\  ",
         "$ |  $ |$  __$\\ $  __$\\",
@@ -259,7 +384,7 @@ static void cmd_xfetch(void) {
         "                           ",
     };
 
-    // Info lines matching each art row
+    // info lines matching each art row
     printf("\n");
 
     sh_print_padded("  ", 2);
@@ -300,13 +425,14 @@ static void cmd_xfetch(void) {
     printf("\n");
 }
 
+// create an empty file
 static void cmd_touch(const char *filename) {
     if (!filename || sh_strlen(filename) == 0) {
         printf("Usage: touch <file>\n");
         return;
     }
 
-    // Just pass the filename as-is - fat32_create will handle current directory
+    // pass the filename as-is — fat32_create handles current directory
     if (fat32_create(filename) == 0) {
         printf("touch: created %s\n", filename);
     } else {
@@ -314,13 +440,14 @@ static void cmd_touch(const char *filename) {
     }
 }
 
+// delete a file
 static void cmd_rm(const char *filename) {
     if (!filename || sh_strlen(filename) == 0) {
         printf("Usage: rm <file>\n");
         return;
     }
 
-    // Just pass the filename as-is - fat32_delete will handle current directory
+    // pass the filename as-is — fat32_delete handles current directory
     if (fat32_delete(filename) == 0) {
         printf("rm: deleted %s\n", filename);
     } else {
@@ -328,13 +455,14 @@ static void cmd_rm(const char *filename) {
     }
 }
 
+// create a directory
 static void cmd_mkdir(const char *dirname) {
     if (!dirname || sh_strlen(dirname) == 0) {
         printf("Usage: mkdir <directory>\n");
         return;
     }
 
-    // Pass the path as-is to fat32_mkdir (it handles both absolute and relative)
+    // pass the path as-is — fat32_mkdir handles absolute and relative
     if (fat32_mkdir(dirname) == 0) {
         printf("mkdir: created %s\n", dirname);
     } else {
@@ -342,6 +470,7 @@ static void cmd_mkdir(const char *dirname) {
     }
 }
 
+// change the current directory
 static void cmd_cd(const char *dirname) {
     if (!dirname || sh_strlen(dirname) == 0) {
         // cd with no args goes to root
@@ -351,12 +480,13 @@ static void cmd_cd(const char *dirname) {
         return;
     }
 
-    // Pass the path as-is to fat32_chdir (it handles both absolute and relative)
+    // pass the path as-is — fat32_chdir handles absolute and relative
     if (fat32_chdir(dirname) != 0) {
         printf("cd: failed to change directory to %s\n", dirname);
     }
 }
 
+// print the current working directory
 static void cmd_pwd(void) {
     const char *cwd = fat32_getcwd();
     if (cwd) {
@@ -366,6 +496,7 @@ static void cmd_pwd(void) {
     }
 }
 
+// toggle debug logging on/off or show status
 static void cmd_log(int argc, char **argv) {
     extern void debug_log_set_enabled(int enabled);
     extern int debug_log_is_enabled(void);
@@ -394,6 +525,7 @@ static void cmd_log(int argc, char **argv) {
     }
 }
 
+// echo text or redirect it to a file
 static void cmd_echo(int argc, char **argv) {
     if (argc < 2) {
         printf("Usage: echo <text> [>] <file>\n");
@@ -436,7 +568,7 @@ static void cmd_echo(int argc, char **argv) {
 
     const char *filename = argv[redirect + 1];
     
-    // Just pass the filename as-is - fat32_write will handle current directory
+    // pass the filename as-is — fat32_write handles current directory
     if (fat32_write(filename, text, sh_strlen(text)) == 0) {
         printf("echo: wrote %s\n", filename);
     } else {
@@ -444,6 +576,7 @@ static void cmd_echo(int argc, char **argv) {
     }
 }
 
+// launch a ring-3 user mode test task
 static void cmd_usermode(void) {
     extern void user_test_entry(void);  // defined in user_test.asm
 
@@ -462,6 +595,7 @@ static void cmd_usermode(void) {
     scheduler_yield();
 }
 
+// load and execute an elf binary in ring-3
 static void cmd_exec(const char *filename) {
     if (!filename || sh_strlen(filename) == 0) {
         printf("Usage: exec <file>\n");
@@ -512,6 +646,7 @@ static void cmd_exec(const char *filename) {
     scheduler_yield();
 }
 
+// reboot the system via the keyboard controller
 static void cmd_reboot(void) {
     printf("Rebooting...\n");
     uint8_t val;
@@ -520,20 +655,23 @@ static void cmd_reboot(void) {
     __asm__ volatile("cli; hlt");
 }
 
-// ── Input ─────────────────────────────────────────────────────────────────────
+// ── input ─────────────────────────────────────────────────────────────────────
 
+// clear the current line by printing backspace characters
 static void clear_line(int pos) {
     for (int i = 0; i < pos; i++) {
         printf("\b \b");
     }
 }
 
+// print a line of text (used for history recall)
 static void print_line(const char *line) {
     for (int i = 0; line[i]; i++) {
         printf("%c", line[i]);
     }
 }
 
+// read one line of input from the keyboard, with history support
 static int sh_readline(char *buf, int max) {
     int pos = 0;
     int browse_pos = history_count;
@@ -542,7 +680,7 @@ static int sh_readline(char *buf, int max) {
     while (1) {
         unsigned char c = (unsigned char)keyboard_getchar();
         
-        // Handle Page Up/Down for scrollback
+        // handle page up/down for scrollback
         if (c == (unsigned char)KEY_PGUP) {
             vga_scrollback_up(5);
             continue;
@@ -552,15 +690,15 @@ static int sh_readline(char *buf, int max) {
             continue;
         }
         
-        // Any other key resets scrollback
+        // any other key resets scrollback
         if (vga_scrollback_is_active() && c != (unsigned char)KEY_PGUP && c != (unsigned char)KEY_PGDN) {
             vga_scrollback_reset();
         }
         
-        // Handle arrow keys
+        // handle up/down arrow keys for history browsing
         if (c == (unsigned char)KEY_UP) {
             if (browse_pos > 0) {
-                // Save current input if at bottom
+                // save current input if at bottom of history
                 if (browse_pos == history_count) {
                     for (int i = 0; i < pos; i++) temp[i] = buf[i];
                     temp[pos] = '\0';
@@ -586,7 +724,7 @@ static int sh_readline(char *buf, int max) {
                 pos = 0;
                 
                 if (browse_pos == history_count) {
-                    // Restore saved input
+                    // restore saved input
                     for (int i = 0; temp[i]; i++) {
                         buf[pos++] = temp[i];
                     }
@@ -607,11 +745,11 @@ static int sh_readline(char *buf, int max) {
             vga_flush();
             buf[pos] = '\0';
             
-            // Add to history if non-empty and different from last
+            // add to history if non-empty and different from last entry
             if (pos > 0) {
                 int add_to_history = 1;
                 if (history_count > 0) {
-                    // Check if same as last command
+                    // check if this is the same as the last command
                     int same = 1;
                     for (int i = 0; i < pos; i++) {
                         if (buf[i] != history[history_count - 1][i]) {
@@ -641,6 +779,21 @@ static int sh_readline(char *buf, int max) {
             pos--;
             printf("\b \b");
             vga_flush();
+        if (c == 3) {
+            printf("^C\n");
+            vga_flush();
+            buf[0] = '\0';
+            return 0;
+        }
+        if (c == 24) {
+            while (pos > 0) {
+                printf("\\b \\b");
+                printf("\b \b");
+            }
+            buf[0] = '\0';
+            vga_flush();
+            continue;
+        }
             continue;
         }
         
@@ -654,8 +807,9 @@ static int sh_readline(char *buf, int max) {
     }
 }
 
-// ── Parser ────────────────────────────────────────────────────────────────────
+// ── parser ────────────────────────────────────────────────────────────────────
 
+// parse a command line and dispatch to the right handler
 static void sh_parse_and_run(char *line) {
     while (*line == ' ') line++;
     if (*line == '\0') return;
@@ -687,6 +841,8 @@ static void sh_parse_and_run(char *line) {
     else if (sh_strcmp(cmd, "rm")      == 0) cmd_rm(argc > 1 ? argv[1] : "");
     else if (sh_strcmp(cmd, "log")     == 0) cmd_log(argc, argv);
     else if (sh_strcmp(cmd, "exec")    == 0) cmd_exec(argc > 1 ? argv[1] : "");
+    else if (sh_strcmp(cmd, "ping")    == 0) cmd_ping(argc, argv);
+    else if (sh_strcmp(cmd, "arp")     == 0) cmd_arp(argc, argv);
     else if (sh_strcmp(cmd, "usermode")== 0) cmd_usermode();
     else if (sh_strcmp(cmd, "reboot")  == 0) cmd_reboot();
     else if (sh_strcmp(cmd, "colors")  == 0) cmd_colors();
@@ -697,8 +853,9 @@ static void sh_parse_and_run(char *line) {
     else printf("%s: command not found  (type 'help')\n", cmd);
 }
 
-// ── Entry ─────────────────────────────────────────────────────────────────────
+// ── entry ─────────────────────────────────────────────────────────────────────
 
+// the main shell entry point — runs forever processing commands
 void shell_run(void) {
     pit_init(100);
     printf("\n");
@@ -709,7 +866,7 @@ void shell_run(void) {
 
     char line[SHELL_BUF_SIZE];
     while (1) {
-        // Print prompt with configured color
+        // print prompt with configured colors
         uint8_t prev = vga_get_color();
         vga_set_color(shell_prompt_fg, shell_prompt_bg);
         printf("xos> ");
