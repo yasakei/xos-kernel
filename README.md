@@ -1,6 +1,6 @@
 # xos
 
-a minimal 64-bit x86-64 hobby os kernel with preemptive multitasking, a fat32 filesystem, pci enumeration, an interactive shell, and basic network drivers.
+xos - a minimal 64-bit x86-64 hobby os. the kernel is called phobos. features preemptive multitasking, a fat32 filesystem, pci enumeration, an interactive shell, and basic network drivers.
 
 ## run
 
